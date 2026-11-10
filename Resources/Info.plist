@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Disk Survey's Info.plist template.
+  CFBundleShortVersionString / CFBundleVersion are placeholders: Scripts/build-app.sh overwrites
+  them from the VERSION file (and BUILD_NUMBER) when it assembles the bundle.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.disksurvey.app</string>
+	<key>CFBundleName</key>
+	<string>Disk Survey</string>
+	<key>CFBundleDisplayName</key>
+	<string>Disk Survey</string>
+	<key>CFBundleExecutable</key>
+	<string>DiskSurvey</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>0</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 The Disk Survey contributors. Released under the MIT License.</string>
+
+	<!-- A scan lives only in memory and a Move to Trash may be in flight, so the system must not
+	     quietly terminate or kill the app behind the user's back. -->
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+
+	<!-- Lets folders and whole volumes be dropped on the Dock icon or opened via "Open With".
+	     Rank "Alternate": Disk Survey offers itself for folders but never becomes their default handler. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+				<string>public.directory</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Volume</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.volume</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- Shown by macOS the first time a scan reaches one of these protected locations. -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Disk Survey reads the names and sizes of the items on your Desktop to show how much space they use. It never reads file contents and nothing leaves your Mac.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Disk Survey reads the names and sizes of the items in your Documents folder to show how much space they use. It never reads file contents and nothing leaves your Mac.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Disk Survey reads the names and sizes of the items in your Downloads folder to show how much space they use. It never reads file contents and nothing leaves your Mac.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Disk Survey reads the names and sizes of the items on removable volumes to show how much space they use. It never reads file contents and nothing leaves your Mac.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Disk Survey reads the names and sizes of the items on network volumes to show how much space they use. It never reads file contents and nothing leaves your Mac.</string>
+	<key>NSFileProviderDomainUsageDescription</key>
+	<string>Disk Survey reads the names and sizes of the items in cloud-synced folders to show how much space they use. It never reads file contents and does not download files that are stored only in the cloud.</string>
+</dict>
+</plist>
