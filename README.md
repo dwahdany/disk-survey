@@ -146,8 +146,7 @@ $ disksurvey export ~ -f ncdu -o home.json        # readable by ncdu -f home.jso
 
 <img src="docs/images/scan-time.png" width="880" alt="Disk Survey scanned 1.6–2.2× faster than the next-fastest tool: 0.8 s for /Applications and 6.5 s for a home folder, against 1.2–8.9 s and 14.2–49.7 s for dua, diskus, gdu, dust, ncdu and du">
 
-Measured on one machine (Apple M6, 12 cores, macOS 27.2, internal APFS SSD, warm file-system
-cache); yours will differ.
+Measured on an Apple M6 (12 cores), macOS 27.2.
 
 | What                                                        | Result                                   |
 |-------------------------------------------------------------|------------------------------------------|
