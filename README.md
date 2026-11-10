@@ -32,6 +32,10 @@ Scripts/build-app.sh --install          # universal build, copied to /Applicatio
 [DEVELOPMENT.md](DEVELOPMENT.md) covers the build options, tests, the screenshot harness,
 benchmarks, signing and releasing, and the architecture.
 
+There is no Mac App Store release. The code can be built as a sandboxed variant
+(`Scripts/build-app.sh --sandbox`), which is what a store release would be; it has only been
+checked by automated runs, see [Sandboxed edition](#sandboxed-edition).
+
 ## Features
 
 - **Fast scanning.** A parallel scanner built on `getattrlistbulk` reads directory entries and
@@ -93,10 +97,28 @@ dates — never file contents — and makes no network connections.
 The command line tool inherits the permissions of the terminal application it runs in, so grant
 Full Disk Access to your terminal if you want complete results there.
 
+### Sandboxed edition
+
+Built with `--sandbox`, Disk Survey runs in the macOS App Sandbox and behaves differently in
+these ways:
+
+- It can read only the disks and folders you choose. The start screen offers to allow the whole
+  startup disk once; otherwise an open panel asks ("Grant Access") for each new location. The
+  choice is remembered and can be removed in Settings › Scanning.
+- Full Disk Access is needed *in addition* for the folders macOS protects separately (Mail,
+  Messages, Safari, the Trash, other apps' data). Full Disk Access alone gives a sandboxed app
+  nothing; on top of a chosen disk it works (tried on macOS 27.2).
+- The command line tool is not included.
+- Settings and recent scans are kept apart from the normal build's.
+
+No sandboxed build has been released or submitted to the App Store. What was tried and what
+is still untested is listed in
+[DEVELOPMENT.md](DEVELOPMENT.md#sandboxed-and-app-store-builds).
+
 ## Command line
 
 The same scanner is available without the GUI. The tool lives inside the app bundle at
-`Disk Survey.app/Contents/Helpers/disksurvey`; put it on your `PATH` with:
+`Disk Survey.app/Contents/Helpers/disksurvey` (not in the sandboxed variant); put it on your `PATH` with:
 
 ```sh
 Scripts/install-cli.sh              # symlinks into /usr/local/bin, or ~/.local/bin

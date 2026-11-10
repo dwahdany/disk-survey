@@ -69,7 +69,18 @@ extension WindowModel {
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-        for url in urls { NSWorkspace.shared.open(url) }
+        guard app.isSandboxed else {
+            for url in urls { NSWorkspace.shared.open(url) }
+            return
+        }
+        // Sandboxed, opening can be refused; say so instead of doing nothing.
+        let refused = urls.filter { !NSWorkspace.shared.open($0) }
+        if !refused.isEmpty {
+            show(ToastMessage(
+                symbol: "exclamationmark.triangle",
+                text: refused.count == 1 ? "“\(refused[0].lastPathComponent)” could not be opened" : "\(refused.count) items could not be opened",
+                detail: "macOS did not let the sandboxed Disk Survey open it. Reveal it in Finder and open it there."))
+        }
     }
 
     func copyPaths() {
@@ -108,7 +119,20 @@ extension WindowModel {
         guard let tree, let node = orderedSelection.first ?? Optional(rootNode) else { return }
         let directory = tree.isDirectory(node) && !tree.flags(of: node).contains(.package) ? node : (tree.parent(of: node) ?? node)
         let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
-        NSWorkspace.shared.open([tree.url(of: directory)], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+        guard app.isSandboxed else {
+            NSWorkspace.shared.open([tree.url(of: directory)], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+            return
+        }
+        // Whether the sandbox lets Disk Survey hand a folder to Terminal has not been verified;
+        // if it does not, the command must not fail silently.
+        NSWorkspace.shared.open([tree.url(of: directory)], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
+            guard let reason = error?.localizedDescription else { return }
+            Task { @MainActor in
+                self?.show(ToastMessage(
+                    symbol: "exclamationmark.triangle", text: "Terminal could not be opened here",
+                    detail: "\(reason) The sandboxed Disk Survey may not be allowed to do this; use Copy Path instead."))
+            }
+        }
     }
 
     func showInfo() {
@@ -288,9 +312,16 @@ extension WindowModel {
             } else {
                 let amount = sizeMode == .allocated ? freed.allocated : freed.logical
                 let count = outcome.trashed.count
+                var detail = count == 1 ? "“\((outcome.trashed[0].originalPath as NSString).lastPathComponent)” moved to the Trash" : "\(count) items moved to the Trash"
+                // Sandboxed, the Trash usually lies outside what the user allowed, so the item
+                // cannot be recognized there and Undo is not offered. Say where to turn instead.
+                if app.isSandboxed, lastTrash.count < count {
+                    detail += lastTrash.isEmpty
+                        ? ". To restore, use Put Back in the Finder’s Trash: the sandbox keeps Disk Survey out of it."
+                        : ". Undo covers \(lastTrash.count) of them; restore the others with Put Back in the Finder’s Trash."
+                }
                 show(ToastMessage(
-                    symbol: "trash", text: "Freed \(Format.bytes(amount))",
-                    detail: count == 1 ? "“\((outcome.trashed[0].originalPath as NSString).lastPathComponent)” moved to the Trash" : "\(count) items moved to the Trash",
+                    symbol: "trash", text: "Freed \(Format.bytes(amount))", detail: detail,
                     actionTitle: lastTrash.isEmpty ? nil : "Undo", action: lastTrash.isEmpty ? nil : .undoTrash))
             }
         }

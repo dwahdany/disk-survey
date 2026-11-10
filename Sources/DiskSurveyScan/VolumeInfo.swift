@@ -75,6 +75,20 @@ public enum VolumeInfo {
         }
     }
 
+    /// Every mounted filesystem with its volume UUID, hidden ones included. Used to tell a
+    /// disk that is not connected from a bookmark that no longer works.
+    public static func mountedIdentities() -> [MountedVolumeIdentity] {
+        MountTable.readMounts().map { mount in
+            let url = URL(filePath: mount.mountPoint, directoryHint: .isDirectory)
+            return MountedVolumeIdentity(mountPoint: mount.mountPoint, uuid: volumeUUID(of: url))
+        }
+    }
+
+    /// The UUID of the volume `url` is on; `nil` when the volume has none or it cannot be read.
+    public static func volumeUUID(of url: URL) -> String? {
+        (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+    }
+
     /// The volume a path lives on, if it can be determined.
     public static func volume(containing url: URL) -> Volume? {
         var fs = statfs()

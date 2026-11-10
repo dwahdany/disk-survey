@@ -103,6 +103,12 @@ struct AlertInfo: Identifiable {
     var message: String
     var paths: [String] = []
     var offersRescan = false
+    /// Sandboxed edition: the scan root that macOS refused for lack of permission.
+    var accessURL: URL?
+    /// …and what the alert can honestly offer for it (see `RootDenialAdvice`): the open panel
+    /// for exactly that location ("Grant Access…"), and the way to Full Disk Access.
+    var offersGrantPanel = false
+    var offersPrivacySettings = false
 }
 
 enum InspectorTab: String, CaseIterable, Identifiable {
@@ -166,6 +172,11 @@ final class WindowModel: Identifiable {
     private(set) var locationMissing = false
 
     @ObservationIgnored private var session: ScanSession?
+    /// Sandboxed edition: what keeps the scanned location readable while this window shows it
+    /// (see `AccessLease`). Held from the start of a scan until the window closes, scans
+    /// something else or goes back to the start screen — not per scan: rescans, Quick Look,
+    /// icons and Move to Trash need it too.
+    @ObservationIgnored private(set) var access: AccessLease?
     /// The options the tree on screen was scanned with (the settings may have changed since).
     @ObservationIgnored private(set) var scanOptionsInUse = ScanOptions()
     @ObservationIgnored private var scanToken = 0
@@ -244,6 +255,25 @@ final class WindowModel: Identifiable {
         snapshotTask?.cancel()
         searchTask?.cancel()
         toastTask?.cancel()
+    }
+
+    /// Gives up the hold on the scanned location (the window closed or shows no scan any more).
+    func releaseAccess() {
+        access?.release()
+        access = nil
+    }
+
+    /// Takes `lease` for the scan of `url` that is about to start. Without a new lease the
+    /// current one is kept as long as it reaches `url` (a rescan).
+    private func adoptAccess(_ lease: AccessLease?, for url: URL) {
+        if let lease {
+            guard lease !== access else { return }
+            let previous = access
+            access = lease
+            previous?.release()
+        } else if let current = access, !current.covers(url) {
+            releaseAccess()
+        }
     }
 
     // MARK: Derived values for the views
@@ -338,8 +368,13 @@ final class WindowModel: Identifiable {
 
     // MARK: Scanning
 
-    func startScan(_ url: URL) {
+    /// Starts scanning `url` in this window.
+    ///
+    /// In the sandboxed edition `url` must be within reach: callers go through
+    /// `AppModel.scan(_:in:)`, which finds or asks for the grant and passes its lease here.
+    func startScan(_ url: URL, access lease: AccessLease? = nil) {
         let url = url.standardizedFileURL
+        adoptAccess(lease, for: url)
         tearDown()
         scanToken += 1
         let token = scanToken
@@ -450,18 +485,35 @@ final class WindowModel: Identifiable {
         session = nil
         progress = result.tree.count > 1 ? finalProgress(result) : progress
 
-        if result.rootKind == .inaccessible {
+        // Sandboxed, a root that macOS lets be examined but not listed — a folder it protects
+        // separately, reached through a grant for the disk (measured with ~/Library/Mail) —
+        // comes back as an empty tree with one issue. That is the same dead end as a root that
+        // cannot be examined at all and gets the same answer: an empty map would not say what
+        // can be done about it. (Not sandboxed, the empty map with its notice stays as it was.)
+        if result.rootKind == .inaccessible || (app.isSandboxed && result.rootWasRefused) {
             let issue = result.issues.first
             phase = .start
             setTree(nil, idsStable: false)
-            alert = AlertInfo(
+            var info = AlertInfo(
                 title: "“\(scanRoot?.lastPathComponent ?? "Folder")” can’t be scanned",
                 message: issue.map { "\($0.message).\n\($0.path)" } ?? "The location could not be read.")
+            if app.isSandboxed, issue?.kind == .permissionDenied, let scanRoot {
+                // A grant covered the location (the scan would not have started otherwise),
+                // and macOS refused it all the same. Say what is known and promise nothing.
+                let advice = RootDenialAdvice(root: scanRoot.path, grantRoot: access?.rootPath, fullDiskAccess: app.fullDiskAccess)
+                info.message += "\n" + Self.denialText(advice)
+                info.accessURL = scanRoot
+                info.offersGrantPanel = advice.offersGrantPanel
+                info.offersPrivacySettings = advice.pointsToFullDiskAccess
+            }
+            alert = info
+            releaseAccess()
             return
         }
         if result.wasCancelled, result.tree.count <= 1 {
             phase = .start
             setTree(nil, idsStable: false)
+            releaseAccess()
             return
         }
 
@@ -494,6 +546,22 @@ final class WindowModel: Identifiable {
         if selection.isEmpty, app.launch.isHarness == false { /* nothing preselected: the map speaks for itself */ }
     }
 
+    /// Sandboxed edition: what to say when macOS refused the scan root although a grant
+    /// covered it. Nothing here claims that a remedy works: whether Full Disk Access is
+    /// honoured for a sandboxed app has not been tried.
+    static func denialText(_ advice: RootDenialAdvice) -> String {
+        var text = advice.offersGrantPanel
+            ? "macOS did not let Disk Survey read this location, although a disk or folder you allowed contains it."
+            : "macOS did not let Disk Survey read this location, although you chose it yourself."
+        if advice.pointsToFullDiskAccess {
+            text += " It is probably protected separately, like Mail, Messages, Safari and other apps’ data: such folders need Full Disk Access in addition to the access you allow here."
+        }
+        if advice.offersGrantPanel {
+            text += " Choosing the folder itself with Grant Access may also help; it does not for every protected folder."
+        }
+        return text
+    }
+
     private func finalProgress(_ result: ScanResult) -> ScanProgress {
         var final = session?.progress ?? progress
         final.isFinished = true
@@ -505,6 +573,7 @@ final class WindowModel: Identifiable {
     /// disk at hand provides.
     func loadSynthetic(nodeCount: Int) {
         tearDown()
+        releaseAccess()
         scanToken += 1
         let token = scanToken
         scanRoot = URL(fileURLWithPath: "/Synthetic")
@@ -588,7 +657,9 @@ final class WindowModel: Identifiable {
     func rescan(whole: Bool = false) {
         guard phase == .loaded, let scanRoot, !locationMissing else { return }
         if whole || rootNode == 0 {
-            startScan(scanRoot)
+            // Through the access manager like every other scan root; this window's lease
+            // already covers it, so nothing is asked.
+            app.scan(scanRoot, in: self, inPlace: true)
         } else {
             let node = rootNode
             enqueueMutation { [weak self] in await self?.rescanSubtrees([node], announce: true) }

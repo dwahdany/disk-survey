@@ -215,4 +215,13 @@ public struct ScanResult: Sendable {
     public var resolvedRootPath: String
 
     public var permissionDeniedCount: Int { issues.count { $0.kind == .permissionDenied } }
+
+    /// Whether the scan root itself was refused for lack of permission, so that nothing below
+    /// it was seen. Either it could not even be examined (`inaccessible`), or — the usual case
+    /// for a folder macOS protects separately, which can be examined but not listed — it came
+    /// back as a directory with no entries and the refusal as its issue.
+    public var rootWasRefused: Bool {
+        guard rootKind != .file, !wasCancelled, tree.count <= 1 else { return false }
+        return issues.contains { $0.kind == .permissionDenied && $0.path == resolvedRootPath }
+    }
 }

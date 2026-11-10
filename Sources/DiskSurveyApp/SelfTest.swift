@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import DiskSurveyCore
+import DiskSurveyScan
 
 /// Regression checks for the app target, run inside the app itself (`--self-test`): the target
 /// is an executable without a test bundle, and most of what is checked here (row-view reuse in
@@ -98,9 +99,12 @@ final class SelfTest {
         do {
             let folder = try makeFixture()
             fixture = folder
-            model.startScan(folder)
+            // The way every scan root goes (sandboxed: through the access manager; the fixture
+            // is in the temporary folder, which is inside the container).
+            model.app.scan(folder, in: model, inPlace: true)
             await settle(0.8)
             if model.tree != nil, model.phase == .loaded {
+                accessPlumbing(fixture: folder)
                 await scanToast()
                 await outlineMetricAndScheme()
                 await staleRows()
@@ -119,6 +123,10 @@ final class SelfTest {
         }
         model.loadSynthetic(nodeCount: 300_000)
         await settle(1.0)
+        check(model.access == nil, "a window that no longer shows a scanned folder holds no access lease")
+        check(model.app.access.outstandingLeases == 0 && model.app.access.scopeStarts == model.app.access.scopeStops,
+            "every security scope the app started has been stopped",
+            "\(model.app.access.scopeStarts) starts, \(model.app.access.scopeStops) stops, \(model.app.access.outstandingLeases) leases out")
         if model.tree != nil, model.phase == .loaded {
             await revealBatching()
             await liveResize()
@@ -167,6 +175,243 @@ final class SelfTest {
         }
         NSWorkspace.shared.setIcon(icon, forFile: root.appending(path: "Foo.app").path, options: [])
         return root
+    }
+
+    // MARK: Sandbox and access
+
+    /// The sandboxed edition's plumbing: detection, the real home folder, where harness output
+    /// goes, and the access manager with real security-scoped bookmarks (made for the fixture,
+    /// kept in memory, never in the user's settings). The bookmark checks run in both editions
+    /// — the system calls are the same — against a manager that is told it is sandboxed and
+    /// that nothing is reachable by itself.
+    private func accessPlumbing(fixture: URL) {
+        let app = model.app
+        let sandboxed = AppSandbox.isSandboxed
+        let home = AppSandbox.realHomeDirectory
+        note("sandboxed: \(sandboxed); Full Disk Access: \(app.fullDiskAccess); stored grants: \(app.access.storedGrants.count)")
+
+        // The signature decides; the environment variable only has to agree when sandboxed
+        // (a normal build may inherit it from whoever started it).
+        let entitled = AppSandbox.ownsEntitlement(AppSandbox.sandboxEntitlement)
+        check(app.isSandboxed == sandboxed && sandboxed == (entitled ?? sandboxed)
+            && (!sandboxed || ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil),
+            "sandbox detection follows the signature’s entitlement", "sandboxed \(sandboxed), entitlement \(entitled.map(String.init) ?? "unreadable")")
+        check(!AppSandbox.detect(environment: ["APP_SANDBOX_CONTAINER_ID": "inherited"], entitlement: false),
+            "an inherited APP_SANDBOX_CONTAINER_ID does not make an unsandboxed build behave as sandboxed")
+        check(home.hasPrefix("/") && !home.contains("/Library/Containers/") && (sandboxed ? NSHomeDirectory() != home : NSHomeDirectory() == home),
+            "the real home folder comes from the user database, not from the container", "NSHomeDirectory is the \(NSHomeDirectory() == home ? "real home" : "container")")
+        check(app.quickLocations.first?.url.path == home && app.quickLocations.contains { $0.url.path == home + "/Downloads" },
+            "the Home and Downloads buttons point into the real home folder")
+        check(LaunchOptions(arguments: ["--scan", "~/Library"]).scanPath == home + "/Library", "“~” in a launch argument is the real home folder")
+        let tmp = URL(fileURLWithPath: "/container/tmp")
+        check(SnapshotHarness.outputPath(for: "/somewhere/else/shot.png", sandboxed: true, temporaryDirectory: tmp) == "/container/tmp/shot.png"
+            && SnapshotHarness.outputPath(for: "/somewhere/else/shot.png", sandboxed: false, temporaryDirectory: tmp) == "/somewhere/else/shot.png",
+            "harness output is redirected into the container only when sandboxed")
+
+        // The app's own manager and the window's lease.
+        if sandboxed {
+            check(app.access.coverage(for: fixture) == .implicit, "the temporary folder is reachable without a grant", "\(app.access.coverage(for: fixture))")
+            check(model.access?.kind == .implicit && model.access?.covers(fixture) == true, "the scanning window holds a lease on its folder")
+            let reach = DiskAccess.probePaths.contains { app.access.isWithinReach($0) }
+            check(reach ? app.fullDiskAccess != .unknown : app.fullDiskAccess == .unknown,
+                "Full Disk Access is “unknown” exactly while no grant reaches the protected folders", "in reach: \(reach), state: \(app.fullDiskAccess)")
+            check(!app.access.allowsPanels, "harness runs never show the open panel")
+        } else {
+            check(app.access.coverage(for: fixture) == .unrestricted && app.access.coverage(for: URL(fileURLWithPath: "/")) == .unrestricted,
+                "not sandboxed: every location is unrestricted")
+            check(model.access == nil, "not sandboxed: the window needs no lease")
+            check(app.fullDiskAccess != .unknown, "not sandboxed: Full Disk Access is yes or no")
+            check(app.access.storedGrants.isEmpty && app.access.coversStartupDisk, "not sandboxed: no grants are stored or needed")
+        }
+
+        // A manager under sandbox rules with nothing reachable by itself.
+        let store = GrantStore.inMemory()
+        let manager = AccessManager(sandboxed: true, store: store, implicitRoots: [])
+        manager.allowsPanels = false
+        let inner = fixture.appending(path: "sub/deep")
+        let outside = fixture.deletingLastPathComponent().appending(path: "disksurvey-selftest-elsewhere")
+        check(manager.coverage(for: fixture) == .none && manager.lease(for: fixture) == nil, "no grant: the location is not covered")
+        var answered = false, refused = false
+        manager.obtain(fixture, userSelected: false, window: nil) { granted in
+            answered = true
+            refused = granted == nil
+        }
+        check(answered && refused, "no grant and no panel allowed: the request fails at once instead of waiting for a click")
+
+        guard let adopted = manager.adopt(fixture) else {
+            return check(false, "a user-selected folder is adopted", manager.lastBookmarkError ?? "no lease")
+        }
+        let first = adopted.lease
+        check(first.kind == .scoped && first.covers(inner) && !first.covers(outside), "a user-selected folder is adopted and covers what is below it, nothing else")
+        let bookmarked = manager.storedGrants.count == 1 && adopted.remembered
+        check(bookmarked, "a security-scoped bookmark is stored for it", manager.lastBookmarkError ?? "\(manager.storedGrants.count) records")
+        check(manager.coverage(for: inner) == .active && manager.coverage(for: outside) == .none, "an active grant for an ancestor covers a subfolder, not a sibling")
+        let second = manager.lease(for: inner)
+        check(second != nil && manager.activeGrantCount == 1 && manager.outstandingLeases == 2 && manager.scopeStarts <= 1,
+            "a second lease shares the started scope", "\(manager.activeGrantCount) grants, \(manager.outstandingLeases) leases, \(manager.scopeStarts) starts")
+        first.release()
+        first.release()
+        check(manager.outstandingLeases == 1 && manager.activeGrantCount == 1, "releasing one lease (twice) keeps the scope open for the other")
+        second?.release()
+        check(manager.outstandingLeases == 0 && manager.activeGrantCount == 0 && manager.scopeStarts == manager.scopeStops,
+            "start and stop of the security scope are balanced", "\(manager.scopeStarts) starts, \(manager.scopeStops) stops")
+
+        if bookmarked {
+            check(manager.coverage(for: inner) == .stored, "with no lease out the grant is only stored")
+            // What the next launch does: a new manager reads the table and resolves the bookmark.
+            let relaunched = AccessManager(sandboxed: true, store: store, implicitRoots: [])
+            relaunched.allowsPanels = false
+            check(relaunched.storedGrants.map(\.path) == manager.storedGrants.map(\.path), "the stored table is read back")
+            if let lease = relaunched.lease(for: inner) {
+                let listing = opendir(inner.path)
+                check(lease.kind == .scoped && listing != nil && relaunched.scopeStarts == 1, "a stored bookmark gives access to a subfolder without a panel")
+                if let listing { closedir(listing) }
+                lease.release()
+                check(relaunched.scopeStarts == relaunched.scopeStops && relaunched.activeGrantCount == 0, "…and its scope is stopped when released")
+            } else {
+                check(false, "a stored bookmark gives access to a subfolder without a panel", relaunched.lastBookmarkError ?? "-")
+            }
+            // The background check (Full Disk Access on every activation) only looks.
+            let written = store.load()
+            let state = relaunched.withStoredAccess(covering: [inner.path]) { relaunched.isWithinReach(inner.path) }
+            check(state && !relaunched.isWithinReach(inner.path) && relaunched.scopeStarts == relaunched.scopeStops, "a stored grant can be started for the length of one check")
+            check(store.load() == written, "…and that check does not write the stored grants (no new “last used” date)")
+            grantBookkeeping(manager: manager, fixture: fixture, inner: inner)
+            relaunched.forget(relaunched.storedGrants.first?.path ?? "")
+            check(relaunched.coverage(for: inner) == .none && AccessGrantTable(data: store.load()).isEmpty, "a forgotten grant is gone from the store")
+            spellings(fixture: fixture)
+            dataVolumeFolder()
+        }
+
+        // A bookmark that no longer resolves: dropped, and the answer is "ask again". One on
+        // a disk that is not connected is kept for when the disk is back.
+        let absent = "/Volumes/disksurvey-selftest-not-connected/folder"
+        var broken = AccessGrantTable()
+        broken.insert(path: fixture.path, bookmark: Data("not a bookmark".utf8), now: Date())
+        broken.insert(path: absent, bookmark: Data("not a bookmark either".utf8), now: Date())
+        let brokenStore = GrantStore.inMemory()
+        brokenStore.save(broken.encoded())
+        let damaged = AccessManager(sandboxed: true, store: brokenStore, implicitRoots: [])
+        damaged.allowsPanels = false
+        check(damaged.coverage(for: inner) == .stored, "fixture: a stored record with a bookmark that cannot be resolved")
+        check(damaged.lease(for: inner) == nil && !damaged.storedGrants.contains { $0.path != absent }
+            && AccessGrantTable(data: brokenStore.load()).records.map(\.path) == [absent],
+            "an unresolvable bookmark is dropped from the table")
+        check(damaged.coverage(for: inner) == .none, "…after which the location needs the open panel again")
+        check(damaged.lease(for: URL(fileURLWithPath: absent + "/x")) == nil && damaged.storedGrants.map(\.path) == [absent]
+            && AccessGrantTable(data: brokenStore.load()).records.map(\.path) == [absent],
+            "a grant on a disk that is not connected is kept, not dropped", "\(damaged.storedGrants.count) records")
+        check(damaged.withStoredAccess(covering: [absent]) { true } && damaged.storedGrants.count == 1, "…and the background check leaves it alone too")
+    }
+
+    /// Which choices add a stored grant and which do not; `manager` holds one for `fixture`.
+    private func grantBookkeeping(manager: AccessManager, fixture: URL, inner: URL) {
+        let root = manager.storedGrants.first?.path ?? ""
+        // A stored grant already covers the choice: it is used, and no second record appears.
+        let again = manager.adopt(inner)
+        check(again?.lease.rootPath == root && again?.remembered == true && manager.storedGrants.count == 1,
+            "a choice inside an allowed folder uses that grant and stores nothing new", "\(manager.storedGrants.count) records")
+        again?.lease.release()
+        let same = manager.adopt(fixture)
+        check(same?.lease.rootPath == root && manager.storedGrants.count == 1, "choosing an allowed folder again stores nothing new")
+        same?.lease.release()
+
+        // Asked for by itself (the enclosing grant did not reach it): stored, and preferred
+        // from then on, also while the broader grant is in use by another window.
+        let forced = manager.adopt(inner, force: true)
+        let innerRoot = forced?.lease.rootPath ?? ""
+        check(manager.storedGrants.count == 2 && innerRoot != root && GrantPath.covers(root, innerRoot),
+            "a folder asked for by itself gets a grant of its own", "\(manager.storedGrants.count) records")
+        forced?.lease.release()
+        let broad = manager.lease(for: fixture)
+        let narrow = manager.lease(for: inner.appending(path: "z.bin"))
+        check(broad?.rootPath == root && narrow?.rootPath == innerRoot && manager.activeGrantCount == 2,
+            "the grant made for a folder wins over a broader one that is in use", "leased from \(narrow?.rootPath == innerRoot ? "the folder’s grant" : "the broader grant")")
+        narrow?.release()
+        manager.forget(innerRoot)
+        check(manager.storedGrants.count == 1, "fixture: the folder’s own grant is removed again")
+
+        // Removed in Settings while a window still uses it, then chosen again: remembered.
+        manager.forget(root)
+        check(manager.storedGrants.isEmpty && manager.coverage(for: fixture) == .active, "a removed grant stays in use until its window lets go")
+        let chosen = manager.grantChosen(fixture)
+        check(chosen?.remembered == true && manager.storedGrants.map(\.path) == [root] && manager.sessionGrants.isEmpty,
+            "choosing a location again after removing it stores a bookmark, although its scope is still in use",
+            "remembered \(chosen?.remembered == true), \(manager.storedGrants.count) records, error \(manager.lastBookmarkError ?? "-")")
+        broad?.release()
+        check(manager.outstandingLeases == 0 && manager.activeGrantCount == 0 && manager.scopeStarts == manager.scopeStops,
+            "…and every scope is stopped afterwards", "\(manager.scopeStarts) starts, \(manager.scopeStops) stops, \(manager.outstandingLeases) leases")
+    }
+
+    /// A location reached through a symbolic link, or written in other letter case: the grant
+    /// is filed under the spelling its bookmark resolves to, and found under either.
+    private func spellings(fixture: URL) {
+        let files = FileManager.default
+        let link = fixture.deletingLastPathComponent().appending(path: "disksurvey-selftest-link-\(UUID().uuidString)")
+        defer { try? files.removeItem(at: link) }
+        guard (try? files.createSymbolicLink(at: link, withDestinationURL: fixture)) != nil,
+            let real = GrantPath.canonical(fixture.appending(path: "sub/deep").path)
+        else { return check(false, "fixture: a symbolic link to the scanned folder") }
+        let through = link.appending(path: "sub/deep")
+        let store = GrantStore.inMemory()
+        let manager = AccessManager(sandboxed: true, store: store, implicitRoots: [])
+        manager.allowsPanels = false
+        check(GrantPath.normalized(through.path) != real && GrantPath.canonical(through.path) == real, "fixture: the link spells the folder differently")
+
+        let adopted = manager.adopt(through)
+        check(adopted?.remembered == true && manager.storedGrants.map(\.path) == [real] && adopted?.lease.rootPath == real,
+            "a folder chosen through a symbolic link is stored under the path its bookmark resolves to",
+            "remembered \(adopted?.remembered == true), \(manager.storedGrants.count) records, error \(manager.lastBookmarkError ?? "-")")
+        check(adopted.map { GrantPath.normalized($0.url.path) == real && $0.lease.covers($0.url) } == true,
+            "…and the location to scan is that spelling, so recents find the grant again")
+        adopted?.lease.release()
+
+        let relaunched = AccessManager(sandboxed: true, store: store, implicitRoots: [])
+        relaunched.allowsPanels = false
+        check(relaunched.coverage(for: through) == .stored, "after a relaunch the stored grant covers the spelling through the link")
+        var granted: AccessManager.Granted?
+        relaunched.obtain(through, userSelected: false, window: nil) { granted = $0 }
+        check(granted.map { $0.lease.rootPath == real && GrantPath.normalized($0.url.path) == real } == true,
+            "…and a scan of that spelling starts without a panel", relaunched.lastBookmarkError ?? "-")
+        granted?.lease.release()
+        // The disk's letter case, where the volume ignores case.
+        let shouted = URL(fileURLWithPath: fixture.path).appending(path: "SUB/DEEP")
+        if GrantPath.canonical(shouted.path) == real {
+            let lease = relaunched.lease(for: shouted)
+            check(lease?.rootPath == real, "a spelling in other letter case finds the stored grant")
+            lease?.release()
+        } else {
+            note("the volume is case-sensitive: the letter-case check does not apply")
+        }
+        // A symbolic link itself cannot be bookmarked; what it points at is stored instead.
+        let target = relaunched.adopt(link)
+        check(target?.remembered == true && target.map { GrantPath.normalized($0.url.path) } == GrantPath.canonical(fixture.path),
+            "a chosen symbolic link is stored as the folder it points at", relaunched.lastBookmarkError ?? "-")
+        target?.lease.release()
+        check(relaunched.outstandingLeases == 0 && relaunched.scopeStarts == relaunched.scopeStops, "…with every scope stopped")
+    }
+
+    /// A folder of the Data volume that no firmlink shows on the startup disk is not the
+    /// system volume's folder of the same name, although a bookmark made for it resolves there.
+    private func dataVolumeFolder() {
+        let chosen = "/System/Volumes/Data/System/Library/CoreServices", twin = "/System/Library/CoreServices"
+        var first = stat(), second = stat()
+        guard stat(chosen, &first) == 0, stat(twin, &second) == 0, first.st_ino != second.st_ino || first.st_dev != second.st_dev else {
+            return note("no Data-volume folder apart from its system-volume namesake here: that check does not apply")
+        }
+        check(GrantPath.normalized(chosen) == chosen && !GrantPath.covers(twin, chosen), "a Data-volume folder without a firmlink keeps its own path")
+        let manager = AccessManager(sandboxed: true, store: .inMemory(), implicitRoots: [])
+        manager.allowsPanels = false
+        let adopted = manager.adopt(URL(fileURLWithPath: chosen, isDirectory: true))
+        check(!manager.storedGrants.contains { GrantPath.covers($0.path, twin) || GrantPath.covers(twin, $0.path) }
+            && manager.coverage(for: URL(fileURLWithPath: twin)) == .none,
+            "choosing it never files a grant for the system volume’s folder of the same name",
+            "stored \(manager.storedGrants.map(\.path)), adopted \(adopted.map { "\($0.lease.rootPath), remembered \($0.remembered)" } ?? "no")")
+        if let adopted {
+            check(adopted.lease.rootPath == chosen && GrantPath.normalized(adopted.url.path) == chosen, "…and what is scanned is the folder that was chosen", adopted.lease.rootPath)
+        }
+        adopted?.lease.release()
+        check(manager.outstandingLeases == 0 && manager.scopeStarts == manager.scopeStops, "…with every scope stopped")
     }
 
     private func node(_ relativePath: String) -> NodeID? {

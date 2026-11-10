@@ -56,7 +56,9 @@ if [ -z "$app" ]; then
 fi
 app="$(cd "$app" 2>/dev/null && pwd -P)" || die "no such app bundle"
 target="$app/Contents/Helpers/$NAME"
-[ -x "$target" ] || die "no command line tool at $target"
+# The sandboxed (App Store) edition is built without the tool: sandboxed, it could not read the
+# folders named on a command line.
+[ -x "$target" ] || die "no command line tool at $target (the sandboxed / App Store edition does not include it; build the normal app with Scripts/build-app.sh)"
 
 mkdir -p "$dir"
 if [ -e "$link" ] && [ ! -L "$link" ]; then

@@ -10,6 +10,7 @@ see the [README](README.md).
 - [Screenshots](#screenshots)
 - [Performance measurements](#performance-measurements)
 - [Signing and notarization](#signing-and-notarization)
+- [Sandboxed and App Store builds](#sandboxed-and-app-store-builds)
 - [Releasing on GitHub](#releasing-on-github)
 - [Architecture](#architecture)
 
@@ -40,6 +41,7 @@ Scripts/build-app.sh --dmg --zip        # … and package dist/DiskSurvey-<versi
 | `--zip`     | Zip archive made with `ditto` (keeps the signature intact).            |
 | `--install` | Copy the app to `/Applications`, or `~/Applications` if not writable.  |
 | `--run`     | Open the app when the build finishes.                                  |
+| `--sandbox`, `--sandbox-test-access`, `--mas`, `--mas-dry-run` | The sandboxed variants; see [Sandboxed and App Store builds](#sandboxed-and-app-store-builds). |
 
 Every run starts by removing `dist/Disk Survey.app` and any `dist/DiskSurvey-*.dmg` / `.zip`,
 and the new bundle and packages only appear under those names once they are complete, signed
@@ -56,7 +58,7 @@ During development you can also run the targets straight from SwiftPM
 ## Tests
 
 ```sh
-Scripts/test.sh                                   # everything: 284 tests in five targets
+Scripts/test.sh                                   # everything: 316 tests in five targets
 Scripts/test.sh --filter TrashServiceTests        # one suite
 DISKSURVEY_TEST_REAL_TRASH=1 Scripts/test.sh --filter TrashServiceTests
 ```
@@ -90,7 +92,9 @@ Other switches: `--select <path>`, `--zoom <path>`, `--color kind|age`,
 `--style adaptive|framed|grouped|cushion`, `--depth 1…4|all`, `--hover <path>` (hover outline and
 tooltip for that item), `--settings general|scanning|appearance`, `--trash-sheet`,
 `--cancel-after <seconds>`, `--dump-menu`, and `--exercise-actions` (trash, undo and rescan
-against a throwaway folder that must be named `disksurvey-action-test`). The picture comes from
+against a throwaway folder that must be named `disksurvey-action-test`; `--action-fixture` makes
+one in the temporary folder and scans it), and `--sandbox-report` (what the process is and can
+reach: sandbox, home, grants, Full Disk Access; results only, no file names). The picture comes from
 the window server when it is available, which shows glass and vibrancy as on screen; while the
 screen is locked it falls back to AppKit's display cache, which shows the layout but not the
 materials (and, in the dark appearance, draws the inspector's text too dark; a window-server
@@ -101,7 +105,14 @@ Recents alone.
 `--self-test` scans a small fixture it creates in the temporary folder and a generated tree, and
 checks things that need a running app: command enabling, the outline's row reuse, stale result
 rows, icon caching, which views are re-evaluated by which change, the split view's limits, the
-map's depth setting, and that a drag onto the Trash acts on the dragged items rather than the selection. The scan
+map's depth setting, that a drag onto the Trash acts on the dragged items rather than the selection, and
+the access plumbing of the sandboxed edition (sandbox detection, the real home folder, and the
+access manager with real security-scoped bookmarks for the fixture: adopt, share, release,
+resolve after a "relaunch", no second record for a folder inside an allowed one, a folder's own
+grant winning over a broader one in use, a location chosen again after its grant was removed,
+a folder reached through a symbolic link or written in other letter case, a background check
+that writes nothing, a bookmark that no longer resolves being dropped and one on a disk that
+is not connected being kept). The scan
 window's minimum width is 842 pt while the inspector is open and 760 pt otherwise.
 
 ## Screenshots
@@ -262,6 +273,215 @@ Scripts/build-app.sh --notarize --dmg --zip
 `--notarize` submits the app to Apple, staples the ticket to the bundle, then packages it, and
 notarizes and staples the dmg as well.
 
+## Sandboxed and App Store builds
+
+The Mac App Store only takes sandboxed apps. There is one code base: the App Sandbox is switched
+on by the entitlements in the signature, and the app asks `AppSandbox.isSandboxed` at run time.
+That answer comes from the process's own signature (`com.apple.security.app-sandbox`), not
+from `APP_SANDBOX_CONTAINER_ID`: a normal build started from an environment that inherited the
+variable is not confined and must not behave as if it were. The variable is consulted only if
+the signature cannot be read.
+Nothing is compiled differently, so the tests and the harness exercise the code that ships.
+**No sandboxed build has been released or submitted; see [Not tested](#not-tested).**
+
+```sh
+Scripts/build-app.sh --native --sandbox          # dist/Disk Survey (Sandbox).app, ad hoc
+# harness only → dist/Disk Survey (Sandbox Test Access).app:
+BUNDLE_ID=dev.disksurvey.sandbox Scripts/build-app.sh --native --sandbox --sandbox-test-access
+Scripts/build-app.sh --mas-dry-run               # the App Store steps, without certificates
+Scripts/build-app.sh --mas                       # the App Store package (needs the three MAS_* variables)
+```
+
+Give ad hoc and Developer ID signed sandboxed builds different `BUNDLE_ID`s. A sandboxed app's
+container belongs to the signer that first created it; a build with the same bundle identifier
+from another signer is held before `main()` on a macOS consent prompt, so a harness run hangs
+without output.
+
+| Option | Effect |
+|--------|--------|
+| `--sandbox` | The same bundle without the command line tool, signed (ad hoc, or with `CODESIGN_IDENTITY`) with `Resources/DiskSurvey.sandbox.entitlements`: `app-sandbox`, `files.user-selected.read-write`, `files.bookmarks.app-scope`. |
+| `--sandbox-test-access` | Only with `--sandbox`, never for distribution. Signs with `Resources/DiskSurvey.sandbox-test-access.entitlements`, which adds a temporary exception for `/` (read-write), so the harness can run the sandboxed code without anyone clicking an open panel. The result has a name of its own, `dist/Disk Survey (Sandbox Test Access).app`, and a red "Test build — not for distribution" card on its start screen, so it cannot pass for the plain sandboxed build. |
+| `--mas` | Universal release build, profile embedded, `application-identifier` and `team-identifier` taken from the profile, `ITSAppUsesNonExemptEncryption=false`, signed with `MAS_APP_IDENTITY`, verified, wrapped with `productbuild` and `MAS_INSTALLER_IDENTITY` into `dist/DiskSurvey-<version>-<build>-mas.pkg`. |
+| `--mas-dry-run` | The same up to the distribution signature: lists what is missing, signs ad hoc, builds an unsigned package to check the layout, leaves nothing in `dist/`. |
+
+`BUNDLE_ID` sets the bundle identifier of a sandboxed variant (default `dev.disksurvey.app`).
+The sandboxed variants never touch `dist/Disk Survey.app` or its dmg/zip and cannot be combined
+with `--dmg`, `--zip`, `--notarize` or `--install`. `--mas` checks everything it can before
+building and lists every problem at once (identities missing or of the wrong type, a profile
+that is expired, for development, for another App ID or a wildcard). A relative `MAS_PROFILE` is
+taken from the directory the script is called in. Its build number is a whole
+number that only goes up: the last one used is kept in `Resources/mas-build-number` (created by
+the first successful `--mas` run; commit it), `BUILD_NUMBER` must be greater, and defaults to
+that number plus one.
+
+### What differs when sandboxed
+
+- **File access.** Every way of choosing a scan root (open panel, drop, Dock and open-document
+  events, volume cards, folder buttons, recents, Rescan Everything, launch arguments) goes
+  through `AppModel.scan(_:in:)` and `AccessManager`. A location needs the app's container, a
+  grant in use, or a stored grant: a security-scoped app-scope bookmark (read-write) in the user
+  defaults (`accessGrants`). A grant covers everything below it. If nothing covers the location,
+  an open panel pointed at it asks ("Grant Access"). The start screen offers "Allow Access to
+  ‹startup disk›" so that one choice covers everything; Settings › Scanning lists the allowed
+  locations. The window keeps the scope started (`AccessLease`, counted, stopped once when the
+  last window lets go) while it shows the scan. The rules, most of them in
+  `AccessGrantTable` (DiskSurveyScan) and covered by `SandboxAccessTests`:
+  - A grant is filed under the path its bookmark resolves to (symbolic links resolved, the
+    disk's letter case), and a request is looked up as given and in that spelling
+    (`GrantPath.canonical`). When only the resolved spelling is covered, that is what is
+    scanned and noted in the recents. A symbolic link itself cannot be bookmarked; the folder
+    it points at is stored instead. If a new bookmark does not lead back to the chosen item
+    (a folder of the Data volume that no firmlink shows on the startup disk), nothing is
+    stored and the choice holds until the app quits.
+  - `/System/Volumes/Data/<path>` counts as `/<path>` only below a firmlink
+    (`GrantPath.firmlinks`, checked against `/usr/share/firmlinks` by a test).
+  - A choice that a stored grant already covers adds no record. Only "Grant Access…" after a
+    refused scan stores a grant for a folder inside an allowed one; from then on the most
+    specific stored grant is used, also while a broader one is in use by another window.
+  - A grant that is merely in use (removed in Settings while a window shows it, or never
+    storable) is not "stored": choosing the location again makes and stores a bookmark.
+  - Bookmarks are resolved without user interface and without mounting. One that does not
+    resolve is dropped, unless it is on `/Volumes/<name>` and that disk is not connected (told
+    by the volume UUID kept with the record, else by the mount point): then it is kept. Two
+    disks that mount under one name keep a record each. A stale bookmark is made again, and
+    dropped if that fails. File › Open Recent refuses a location that is not there.
+  - With 64 records the table is full; records inside a broader grant go first, then the least
+    recently used.
+  - The Full Disk Access check on activation only looks (`AccessGrantTable.peek`): it writes
+    nothing, marks nothing as used and drops nothing. Mount and unmount events do not run it.
+- **A scan root that macOS refuses** although a grant covers it gives an alert that says the
+  folder is probably protected separately and needs Full Disk Access in addition, with "Open
+  Privacy Settings…"; "Grant Access…" is offered only while the folder itself has not been
+  chosen (`RootDenialAdvice`). Nothing in it promises that either remedy works. A protected
+  folder can usually be examined but not listed, which the scanner reports as an empty folder
+  with one issue (`ScanResult.rootWasRefused`); sandboxed, that gets the alert too, where the
+  normal build shows the empty map with its notice.
+- **Home folder.** From `getpwuid` (`AppSandbox.realHomeDirectory`); `NSHomeDirectory()` and `~`
+  are the container.
+- **Full Disk Access** is three-valued (`FullDiskAccess`): granted, not granted, or unknown
+  while no grant reaches the locations the check probes. It is needed *in addition to* choosing
+  the disk; the wording says so and does not promise more.
+- **Actions.** Move to Trash, Put Back, Reveal, Quick Look, Open, Copy Path are unchanged.
+  If a trashed item cannot be identified in the Trash, the toast says to use Put Back in the
+  Finder instead of offering Undo. Open, Open in Terminal and the link into System Settings
+  report a refusal instead of doing nothing.
+- **No command line tool** in the bundle; `Scripts/install-cli.sh` says so.
+- **Settings and recents** live in the container, apart from the normal build's.
+- **Harness.** `--snapshot` output goes to the container's temporary folder under the same file
+  name and the path is printed; `--action-fixture` makes the `--exercise-actions` folder
+  there. A harness run never shows the open panel: a location nothing covers ends the run at
+  once with `access: needs access …` and exit status 3. Harness runs keep their grants in a
+  domain of their own (`--forget-grants` empties it).
+
+### Checking a sandboxed build
+
+Launch it through LaunchServices so that it is its own responsible process (run straight from a
+terminal that has Full Disk Access, macOS attributes privacy decisions to the terminal); `open`
+does not pass the exit status on, so read the output:
+
+```sh
+APP="$PWD/dist/Disk Survey (Sandbox).app"    # or "… (Sandbox Test Access).app"
+open -W -n --stdout out.txt --stderr err.txt -a "$APP" --args --self-test
+open -W -n --stdout out.txt -a "$APP" --args --sandbox-report --snapshot start.png
+open -W -n --stdout out.txt -a "$APP" --args --action-fixture --exercise-actions --snapshot a.png
+# with --sandbox-test-access: any path. Without: only what a grant covers. A folder passed to
+# `open -a` arrives as an open-document event with access of its own and leaves a stored grant
+# (in the harness's own domain), which the second command then uses:
+open -W -n --stdout out.txt -a "$APP" /some/folder --args --snapshot a.png
+open -W -n --stdout out.txt -a "$APP" --args --scan /some/folder/inside --snapshot b.png
+```
+
+### What was measured
+
+On macOS 27.2 (Apple silicon), ad hoc signed, 10 November 2026, with the harness:
+
+- With `--sandbox-test-access`: `--self-test` passes; `/usr` and `/Applications` scan to the
+  same file counts, sizes and issue counts as the normal build; trash, undo and rescan work on
+  a fixture in the container. A scan of `~/Library/Mail` is refused by macOS and ends with the
+  alert described above.
+- Without the exception: `--scan /usr` ends at once with `needs access` (no panel, no hang).
+  A folder outside the container handed over by `open` is scanned, a security-scoped bookmark
+  is stored, a later launch scans a subfolder through that bookmark without a panel, and its
+  parent still needs access. Under that grant Move to Trash and Put Back both work (the
+  folder was on the startup volume), and the file commands and the Quick Look panel are live.
+  A later launch also finds the grant when the subfolder is named through a symbolic link, a
+  folder handed over through a symbolic link is stored under its real path, and handing over
+  a folder inside the stored one adds no record.
+- A normal build started with `APP_SANDBOX_CONTAINER_ID` set in its environment scans as usual.
+- The plain sandbox can `lstat` and `realpath` paths it may not list (so existence checks and
+  the scanner's `realpath` of the root work), and the volume list with capacities is intact.
+
+### Tried by hand
+
+On macOS 27.2 with a Developer ID signed `--sandbox` build: the startup disk was chosen in the
+open panel on the start screen, the bookmark of `/` was stored and resolved on later launches,
+and Full Disk Access was switched on for the app in System Settings. After that the sandboxed
+app, started through `open` so that it answers for itself, read the folders macOS protects
+separately: `~/Library/Mail`, `~/Library/Messages`, `~/Library/Safari`
+and `~/.Trash`, each with no unreadable folder, and its own check reported Full Disk Access as
+granted. With the same disk grant but without Full Disk Access, `~/Library/Mail` scans as
+0 files with one issue. So Full Disk Access is honoured for a sandboxed app on top of a chosen
+disk.
+
+### Not tested
+
+Everything that needs a click in an open panel or a switch in System Settings:
+
+- The open panel beyond choosing the startup disk (see below): "Grant Access" after a refused
+  scan, and a bookmark of `/` on macOS 26.0/26.1, where Apple says it is broken (if it cannot be
+  made the grant lasts until the app quits and is asked for again). Also which spelling the
+  panel hands over for a folder of the Data volume (`open` hands over the system volume's
+  folder of the same name), and the alert after a refused scan with its two buttons.
+- Disks that come and go: a grant surviving the disk being away, two disks under one name, a
+  bookmark on a network share that is not mounted. The rules are unit-tested with stand-ins
+  for the system; no such disk was connected.
+- Whether a grant for the startup disk reaches other volumes, and whether Desktop, Documents,
+  Downloads, iCloud Drive and removable or network volumes raise consent prompts under it.
+- Drag and drop onto a window or the Dock icon, the Dock's recent items, Open, Open in
+  Terminal, Share and the link into System Settings in a sandboxed build. Quick Look: the panel
+  opens and is driven by the window; what it shows was not looked at.
+- `--mas` beyond the dry run: the certificates do not exist yet. Unknown until
+  `altool --validate-app` runs: whether App Store Connect accepts a hand-assembled bundle (no
+  Xcode `DT*` keys in Info.plist, a plain `.icns`), and whether App Review accepts the hidden
+  harness arguments (including a run-time lookup of `CGWindowListCreateImage`) and the pointer
+  to Full Disk Access.
+- macOS 26 and Intel.
+
+### Submitting to the Mac App Store
+
+Steps for a person; none has been done.
+
+1. **Developer portal** (Certificates, Identifiers & Profiles; Account Holder or Admin).
+   Create and install two certificates with their private keys in the login keychain: *Apple
+   Distribution* (signs the app) and *Mac Installer Distribution* (signs the package; shows up
+   as "3rd Party Mac Developer Installer: …" in `security find-identity -v`, without
+   `-p codesigning`). The Developer ID certificate cannot be used. Register an explicit App ID
+   for the bundle identifier (no extra capabilities). Create a *Mac App Store Connect*
+   distribution profile for that App ID and the Apple Distribution certificate; download the
+   `.provisionprofile` and keep it out of the repository.
+2. **Decide the bundle identifier first**: it cannot be changed after the first upload. The
+   same identifier as the Developer ID build means both cannot sensibly be installed side by
+   side and do not share privacy grants; a distinct one keeps them apart.
+3. **App Store Connect.** Accept the agreements; declare trader status for the EU; My Apps › +
+   › New App › macOS with that bundle identifier and a SKU (permanent). Fill in category
+   Utilities (matches `LSApplicationCategoryType`), age rating, App Privacy ("Data Not
+   Collected"), privacy policy and support URLs, screenshots, description, price. Create an API
+   key under Users and Access › Integrations (key file in `~/.appstoreconnect/private_keys`).
+4. **Build and upload** (`altool` ships with Xcode; nothing is notarized):
+
+   ```sh
+   export MAS_APP_IDENTITY="Apple Distribution: Your Name (TEAMID)"
+   export MAS_INSTALLER_IDENTITY="3rd Party Mac Developer Installer: Your Name (TEAMID)"
+   export MAS_PROFILE=~/path/to/DiskSurvey.provisionprofile BUNDLE_ID=your.bundle.id
+   Scripts/build-app.sh --mas
+   xcrun altool --validate-app dist/DiskSurvey-<version>-<build>-mas.pkg --api-key <id> --api-issuer <issuer>
+   xcrun altool --upload-package dist/DiskSurvey-<version>-<build>-mas.pkg --api-key <id> --api-issuer <issuer> --wait
+   ```
+
+5. **TestFlight, then review.** Test the processed build (grant the startup disk, switch on
+   Full Disk Access, scan) before submitting; in the review notes explain the folder choice
+   and that Full Disk Access is optional.
+
 ## Releasing on GitHub
 
 ```sh
@@ -284,7 +504,7 @@ A single Swift package (`Package.swift`, Swift 6 language mode with strict concu
 | Target              | Role                                                                                  |
 |---------------------|---------------------------------------------------------------------------------------|
 | `DiskSurveyCore`    | Foundation-only model: the struct-of-arrays `FileTree`, file-kind classification, formatting. |
-| `DiskSurveyScan`    | Parallel filesystem scanner producing a `FileTree`; mount table, volume info, disk-access checks. |
+| `DiskSurveyScan`    | Parallel filesystem scanner producing a `FileTree`; mount table, volume info, disk-access checks, sandbox detection and the table of access grants. |
 | `DiskSurveyTreemap` | Squarified layout, hit-testing and the cushion rasteriser, drawing into plain pixel buffers. No AppKit. |
 | `DiskSurveyMapView` | The AppKit treemap view: rendering, hover, selection, zoom.                           |
 | `disksurvey-cli`    | The command line tool (installed as `disksurvey`). Uses Core and Scan only.           |
@@ -299,3 +519,6 @@ Treemap, MapView offscreen rendering, and the CLI's parser and text helpers). Pa
   `Resources/AppIcon.icns` (run `swift Scripts/make-icon.swift` after changing it).
 - `Scripts/test.sh` — runs the test suite with a Command-Line-Tools-only toolchain.
 - `Resources/Info.plist` — bundle metadata template; the version is stamped in at build time.
+- `Resources/DiskSurvey.sandbox.entitlements` — the entitlements of the sandboxed variants;
+  `DiskSurvey.sandbox-test-access.entitlements` is the harness-only variant with the
+  whole-disk exception.

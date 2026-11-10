@@ -232,8 +232,17 @@ struct LaunchOptions: Sendable {
     var cancelAfter: Double?
     /// Run the app target's regression checks (see `SelfTest`) and exit.
     var selfTest = false
+    /// Create the throwaway folder for `--exercise-actions` in the temporary directory (inside
+    /// the container when sandboxed) and scan it, instead of a folder named on the command line.
+    var actionFixture = false
+    /// Print what the process can reach (sandbox, home, grants, Full Disk Access) and exit.
+    var sandboxReport = false
+    /// Forget the grants stored by earlier harness runs before doing anything else.
+    var forgetGrants = false
 
-    var isHarness: Bool { snapshotPath != nil || measureStalls || dumpMenu || exerciseActions || selfTest }
+    var isHarness: Bool {
+        snapshotPath != nil || measureStalls || dumpMenu || exerciseActions || selfTest || actionFixture || sandboxReport || forgetGrants
+    }
 
     static let current = LaunchOptions(arguments: Array(CommandLine.arguments.dropFirst()))
 
@@ -275,6 +284,9 @@ struct LaunchOptions: Sendable {
             case "--cancel-after": cancelAfter = value().flatMap(Double.init)
             case "--during-scan": duringScan = value().flatMap(Double.init)
             case "--self-test": selfTest = true
+            case "--action-fixture": actionFixture = true
+            case "--sandbox-report": sandboxReport = true
+            case "--forget-grants": forgetGrants = true
             default:
                 // `DiskSurvey <path>`; AppKit's own `-Key value` options are skipped in pairs.
                 if argument.hasPrefix("-") {
@@ -286,7 +298,9 @@ struct LaunchOptions: Sendable {
             index += 1
         }
         if let path = scanPath {
-            scanPath = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+            // `~` is the real home folder, also in the sandbox (where Foundation expands it to
+            // the app's container).
+            scanPath = URL(fileURLWithPath: AppSandbox.expandingTilde(path)).standardizedFileURL.path
         }
     }
 }

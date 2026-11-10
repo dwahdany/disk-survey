@@ -26,7 +26,9 @@ struct RootView: View {
         .modifier(DocumentProxy(url: model.phase == .start ? nil : model.scanRoot))
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first(where: \.isFileURL) else { return false }
-            if model.phase == .start { model.startScan(url) } else { model.app.open(url) }
+            // A dropped item comes with access of its own; in the sandboxed edition the
+            // access manager keeps it (and asks, should that turn out not to be so).
+            model.app.scan(url, in: model, userSelected: true)
             return true
         } isTargeted: { model.isDropTargeted = $0 }
         .sheet(item: $model.trashRequest) { request in
@@ -39,6 +41,14 @@ struct RootView: View {
             if info.offersRescan {
                 Button("Rescan Folder") { model.rescan() }
                 Button("OK", role: .cancel) {}
+            } else if let url = info.accessURL {
+                if info.offersGrantPanel {
+                    Button("Grant Access…") { model.app.scan(url, in: model, forcePanel: true) }
+                }
+                if info.offersPrivacySettings {
+                    Button("Open Privacy Settings…") { model.app.openFullDiskAccessSettings() }
+                }
+                Button("Cancel", role: .cancel) {}
             } else {
                 Button("OK", role: .cancel) {}
             }
@@ -966,7 +976,8 @@ struct VolumePopover: View {
                 row(Color.primary.opacity(0.12), "Free", breakdown.free)
             }
             if model.preferences.showHiddenSpace {
-                Text("“Not visible” is space the volume reports as used that the scan could not find: local snapshots, system-protected data, other volumes sharing the container, and folders Disk Survey may not read. Purgeable space is reclaimed by macOS when needed.")
+                Text("“Not visible” is space the volume reports as used that the scan could not find: local snapshots, system-protected data, other volumes sharing the container, and folders Disk Survey may not read. Purgeable space is reclaimed by macOS when needed."
+                    + (model.app.isSandboxed ? " In this sandboxed edition that includes every folder macOS protects separately; those need Full Disk Access in addition to the access you allowed." : ""))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1000,7 +1011,9 @@ struct IssuesPopover: View {
             Text("\(Format.counted(summary.totalIssueCount, singular: "folder", plural: "folders")) could not be read")
                 .font(.headline)
             Text(summary.permissionDeniedCount > 0 && !model.app.hasFullDiskAccess
-                ? "Their contents are missing from the map. Most are protected by macOS; granting Full Disk Access and rescanning includes them."
+                ? (model.app.isSandboxed
+                    ? "Their contents are missing from the map. Most are protected by macOS separately from the access you allowed for this location: such folders need Full Disk Access as well. After switching it on, rescan to see whether they are included."
+                    : "Their contents are missing from the map. Most are protected by macOS; granting Full Disk Access and rescanning includes them.")
                 : "Their contents are missing from the map.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1024,10 +1037,7 @@ struct IssuesPopover: View {
                     .foregroundStyle(.secondary)
             }
             if !model.app.hasFullDiskAccess {
-                HStack {
-                    Button("Grant Full Disk Access…") { model.app.openFullDiskAccessSettings() }
-                    Button("Reveal Disk Survey in Finder") { model.app.revealAppInFinder() }
-                }
+                Button("Grant Full Disk Access…") { model.app.openFullDiskAccessSettings() }
             }
         }
         .padding(16)

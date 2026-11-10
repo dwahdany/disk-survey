@@ -13,7 +13,14 @@ struct StartView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 hero
-                if !app.hasFullDiskAccess, !app.preferences.fullDiskAccessCardDismissed {
+                if app.isSandboxed {
+                    if !AppSandbox.staticReadWritePaths.isEmpty { testAccessCard }
+                    // First things first: without a grant the sandbox reads next to nothing.
+                    if !app.access.coversStartupDisk { sandboxAccessCard }
+                    // Shown once it is known to be missing; "unknown" (nothing allowed yet
+                    // reaches the protected folders) is covered by the card above.
+                    if app.fullDiskAccess == .notGranted, !app.preferences.fullDiskAccessCardDismissed { accessCard }
+                } else if !app.hasFullDiskAccess, !app.preferences.fullDiskAccessCardDismissed {
                     accessCard
                 }
                 section("Volumes") {
@@ -25,7 +32,7 @@ struct StartView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
                         ForEach(app.quickLocations) { location in
                             Button {
-                                model.startScan(location.url)
+                                app.scan(location.url, in: model)
                             } label: {
                                 HStack(spacing: 8) {
                                     Image(systemName: location.symbol)
@@ -123,18 +130,17 @@ struct StartView: View {
                 .font(.system(size: 28))
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 6) {
-                Text("Give Disk Survey Full Disk Access for complete results")
+                Text(app.isSandboxed ? "Protected folders need Full Disk Access as well" : "Give Disk Survey Full Disk Access for complete results")
                     .font(.headline)
-                Text("macOS protects Mail, Messages, Photos, other apps’ data and more. Without Full Disk Access those folders show up empty, and macOS may ask for permission folder by folder. Disk Survey only reads file names and sizes; nothing leaves your Mac.")
+                Text(app.isSandboxed
+                    ? "Allowing a disk or folder here does not cover what macOS protects separately: Mail, Messages, Safari, the Trash, other apps’ data and more. Those folders need Full Disk Access in addition; without it they are marked as unreadable and are missing from the totals. Disk Survey only reads file names and sizes; nothing leaves your Mac."
+                    : "macOS protects Mail, Messages, Photos, other apps’ data and more. Without Full Disk Access those folders show up empty, and macOS may ask for permission folder by folder. Disk Survey only reads file names and sizes; nothing leaves your Mac.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button("Open Privacy Settings…") { app.openFullDiskAccessSettings() }
-                    Button("Reveal Disk Survey in Finder") { app.revealAppInFinder() }
-                        .help("Drag Disk Survey from Finder into the Full Disk Access list")
-                }
-                .padding(.top, 2)
+                Button("Open Privacy Settings…") { app.openFullDiskAccessSettings() }
+                    .help("Opens System Settings and shows the Disk Survey icon to drag into the Full Disk Access list")
+                    .padding(.top, 2)
             }
             Spacer(minLength: 0)
             Button {
@@ -151,6 +157,54 @@ struct StartView: View {
         .padding(16)
         .background(.orange.opacity(0.1), in: .rect(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.orange.opacity(0.3)))
+    }
+
+    /// The harness build (`--sandbox-test-access`) must not pass for the real sandboxed
+    /// edition: it reads everything without asking and never shows the open-panel flows.
+    private var testAccessCard: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 24))
+                .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Test build — not for distribution")
+                    .font(.headline)
+                Text("This build is signed with a temporary exception that lets it read and write \(AppSandbox.staticReadWritePaths == ["/"] ? "the whole disk" : AppSandbox.staticReadWritePaths.joined(separator: ", ")) without asking. It exists for automated checks only and does not behave like the sandboxed edition: nothing here asks for access.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(.red.opacity(0.1), in: .rect(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.red.opacity(0.4)))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Sandboxed edition: the one choice that makes everything below a single click.
+    private var sandboxAccessCard: some View {
+        let disk = app.startupDiskName
+        return HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "externaldrive.badge.checkmark")
+                .font(.system(size: 28))
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Allow access to “\(disk)” to scan with one click")
+                    .font(.headline)
+                Text("This edition of Disk Survey runs in the macOS App Sandbox and can only read the disks and folders you choose. Choose “\(disk)” once, and the volumes, folders and recent scans below start without asking again. Without it, macOS asks you to confirm each location in an open panel.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Allow Access to “\(disk)”…") { app.allowStartupDiskAccess(from: model) }
+                    .padding(.top, 2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .background(.tint.opacity(0.08), in: .rect(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.tint.opacity(0.3)))
+        .accessibilityElement(children: .contain)
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -174,9 +228,9 @@ struct StartView: View {
     }
 
     private func recentRow(_ recent: RecentScan) -> some View {
-        let exists = FileManager.default.fileExists(atPath: recent.path)
+        let exists = app.isAvailable(recent)
         return Button {
-            model.startScan(URL(fileURLWithPath: recent.path))
+            app.scan(URL(fileURLWithPath: recent.path), in: model)
         } label: {
             HStack(spacing: 10) {
                 Image(nsImage: IconCache.shared.folderIcon)
@@ -207,7 +261,7 @@ struct StartView: View {
         .buttonStyle(.plain)
         .disabled(!exists)
         .contextMenu {
-            Button("Scan Again") { model.startScan(URL(fileURLWithPath: recent.path)) }.disabled(!exists)
+            Button("Scan Again") { app.scan(URL(fileURLWithPath: recent.path), in: model) }.disabled(!exists)
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: recent.path)]) }.disabled(!exists)
             Divider()
             Button("Remove from Recents") { app.removeRecent(recent) }
@@ -250,14 +304,14 @@ struct VolumeCard: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Button("Scan") { model.startScan(volume.url) }
+            Button("Scan") { model.app.scan(volume.url, in: model) }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Scan \(volume.name)")
         }
         .padding(12)
         .background(.quaternary.opacity(0.6), in: .rect(cornerRadius: 12))
         .contextMenu {
-            Button("Scan") { model.startScan(volume.url) }
+            Button("Scan") { model.app.scan(volume.url, in: model) }
             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([volume.url]) }
         }
         .accessibilityElement(children: .contain)

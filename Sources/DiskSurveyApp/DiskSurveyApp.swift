@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 import Quartz
 import SwiftUI
 import DiskSurveyCore
+import DiskSurveyScan
 
 @main
 struct DiskSurveyApplication: App {
@@ -96,7 +97,8 @@ struct DiskSurveyApplication: App {
     func application(_ application: NSApplication, open urls: [URL]) {
         // The harness passes file paths as option values; AppKit may mistake one for a document.
         guard !LaunchOptions.current.isHarness || LaunchOptions.current.scanPath == nil else { return }
-        for url in urls where url.isFileURL { AppModel.shared.open(url) }
+        // Opened documents come with access of their own (sandboxed edition: see `AccessManager.adopt`).
+        for url in urls where url.isFileURL { AppModel.shared.scan(url, in: nil, userSelected: true) }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -164,7 +166,7 @@ private struct RecentsMenu: View {
     var body: some View {
         Menu("Open Recent") {
             ForEach(app.recents) { recent in
-                Button(recent.path) { app.open(URL(fileURLWithPath: recent.path)) }
+                Button(recent.path) { app.scanRecent(recent, in: nil) }
             }
             if !app.recents.isEmpty { Divider() }
             Button("Clear Menu") { app.clearRecents() }
@@ -365,7 +367,9 @@ struct HelpView: View {
                 Text("“On Disk” is what deleting a file gives back. Hard links are counted once, cloud-only files count as zero, and other volumes are not double counted. When you scan a whole volume, the status bar shows how much space the volume uses that Disk Survey cannot see, such as local snapshots.")
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Full Disk Access").font(.headline)
-                Text("macOS hides some folders from apps. Add Disk Survey under System Settings › Privacy & Security › Full Disk Access to include them.")
+                Text(AppSandbox.isSandboxed
+                    ? "This edition runs in the macOS App Sandbox: it reads only the disks and folders you choose (once for the whole startup disk, if you like; the choice is remembered). Folders that macOS protects separately — Mail, Messages, Safari, the Trash, other apps’ data — need Full Disk Access in addition: add Disk Survey under System Settings › Privacy & Security › Full Disk Access. Full Disk Access alone is not enough; the disk or folder still has to be chosen."
+                    : "macOS hides some folders from apps. Add Disk Survey under System Settings › Privacy & Security › Full Disk Access to include them.")
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Shortcuts").font(.headline)
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 7) {

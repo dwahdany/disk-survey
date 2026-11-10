@@ -12,7 +12,7 @@ struct SettingsView: View {
         @Bindable var state = state
         TabView(selection: $state.tab) {
             Tab("General", systemImage: "gearshape", value: SettingsState.Pane.general) { GeneralSettings(preferences: app.preferences) }
-            Tab("Scanning", systemImage: "internaldrive", value: SettingsState.Pane.scanning) { ScanningSettings(preferences: app.preferences, state: state) }
+            Tab("Scanning", systemImage: "internaldrive", value: SettingsState.Pane.scanning) { ScanningSettings(app: app, preferences: app.preferences, state: state) }
             Tab("Appearance", systemImage: "paintpalette", value: SettingsState.Pane.appearance) { AppearanceSettings(preferences: app.preferences) }
         }
         .scenePadding()
@@ -68,6 +68,7 @@ private struct GeneralSettings: View {
 }
 
 private struct ScanningSettings: View {
+    let app: AppModel
     let preferences: Preferences
     let state: SettingsState
 
@@ -118,9 +119,41 @@ private struct ScanningSettings: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            if app.isSandboxed { allowedLocations }
         }
         .formStyle(.grouped)
-        .frame(height: 390)
+        .frame(height: app.isSandboxed ? min(760, 520 + CGFloat(max(1, app.access.storedGrants.count)) * 34) : 390)
+    }
+
+    /// Sandboxed edition: the disks and folders the user allowed, with a way to take one back.
+    private var allowedLocations: some View {
+        // By location: two disks that mount under one name share an entry (and are removed together).
+        var seen = Set<String>()
+        let grants = app.access.storedGrants.filter { seen.insert($0.path).inserted }
+            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        return Section {
+            if grants.isEmpty {
+                Text("Nothing is allowed yet")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(grants, id: \.path) { grant in
+                HStack {
+                    Label(grant.path == "/" ? "\(app.startupDiskName) (the whole startup disk)" : grant.path, systemImage: grant.path == "/" ? "internaldrive" : "folder")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Remove") { app.access.forget(grant.path) }
+                        .accessibilityLabel("Remove access to \(grant.path)")
+                }
+            }
+            if !app.access.coversStartupDisk {
+                Button("Allow Access to “\(app.startupDiskName)”…") { app.allowStartupDiskAccess(from: nil) }
+            }
+        } header: {
+            Text("Allowed locations")
+        } footer: {
+            Text("This edition runs in the macOS App Sandbox and reads only what you allow. An allowed location covers everything inside it. After removing one, Disk Survey asks again. Folders that macOS protects separately need Full Disk Access as well.")
+        }
     }
 
     private func addExclusion() {

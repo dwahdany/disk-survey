@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import DiskSurveyCore
+import DiskSurveyScan
 
 /// Self-verification: `--scan <path> --snapshot <out.png>` (and friends, see `LaunchOptions`)
 /// drives the app into a state, renders the window into a PNG and exits. Lets the UI be
@@ -28,6 +29,90 @@ final class SnapshotHarness {
 
     func settingsWindowAppeared(_ window: NSWindow) { settingsWindow = window }
 
+    // MARK: Sandbox
+
+    /// Exit status of a harness run that would have needed the open panel.
+    static let needsAccessStatus: Int32 = 3
+
+    /// Sandboxed edition: nothing covers the location a harness run was told to scan. There is
+    /// nobody to click "Grant Access", so the run ends here, at once and saying why.
+    ///
+    /// - Parameter refused: a grant covered the location and macOS refused it all the same.
+    func needsAccess(to url: URL, refused: Bool = false) -> Never {
+        let text = refused
+            ? "access: needs access — macOS refused “\(url.path)” although a grant covers it (it is protected separately, or the grant does not reach it). A harness run cannot show the open panel or switch on Full Disk Access."
+            : "access: needs access — “\(url.path)” is outside the sandbox and no stored grant covers it. A harness run cannot show the open panel: start the app normally and choose the location, or use a build made with --sandbox-test-access."
+        print(text)
+        FileHandle.standardError.write(Data("disksurvey harness: \(text)\n".utf8))
+        exit(Self.needsAccessStatus)
+    }
+
+    /// Where a harness output file really goes. Sandboxed, the process may only write inside
+    /// its container, so the file keeps its name and lands in the container's temporary folder.
+    nonisolated static func outputPath(for requested: String, sandboxed: Bool, temporaryDirectory: URL) -> String {
+        guard sandboxed else { return requested }
+        let name = (requested as NSString).lastPathComponent
+        return temporaryDirectory.appending(path: name.isEmpty ? "snapshot.png" : name).path
+    }
+
+    /// The throwaway folder for `--exercise-actions`, made afresh in the temporary directory
+    /// (which is inside the container when sandboxed). `nil` if it cannot be created.
+    static func makeActionFixture() -> URL? {
+        let manager = FileManager.default
+        let root = manager.temporaryDirectory.appending(path: "disksurvey-action-test")
+        try? manager.removeItem(at: root)
+        let files: [(String, Int)] = [
+            ("keep/one.bin", 600_000), ("keep/two.bin", 200_000), ("folder/x.bin", 300_000), ("folder/y.bin", 100_000),
+            ("large.bin", 500_000), ("medium.bin", 250_000), ("small.txt", 2_000),
+        ]
+        do {
+            for (path, bytes) in files {
+                let url = root.appending(path: path)
+                try manager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(repeating: 0x5A, count: bytes).write(to: url)
+            }
+        } catch {
+            FileHandle.standardError.write(Data("disksurvey harness: cannot create the action fixture: \(error.localizedDescription)\n".utf8))
+            return nil
+        }
+        print("fixture: \(root.path)")
+        return root
+    }
+
+    /// `--sandbox-report`: what this process is and what it can reach. Results only (errno
+    /// values and counts), never the names of anything found.
+    private func sandboxReport(_ model: WindowModel) {
+        let app = model.app
+        func code(_ ok: Bool) -> String { ok ? "ok" : "errno \(errno) (\(String(cString: strerror(errno))))" }
+        print("sandbox: sandboxed \(AppSandbox.isSandboxed), entitlement \(AppSandbox.ownsEntitlement(AppSandbox.sandboxEntitlement).map(String.init) ?? "unreadable"), container id \(ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] ?? "-")")
+        print("sandbox: real home \(AppSandbox.realHomeDirectory)")
+        print("sandbox: NSHomeDirectory \(NSHomeDirectory())")
+        print("sandbox: temporary directory \(FileManager.default.temporaryDirectory.path)")
+        print("sandbox: static read-write paths \(AppSandbox.staticReadWritePaths), container paths \(AppSandbox.containerPaths)")
+        let mounts = VolumeInfo.mountedIdentities()
+        print("sandbox: mounted filesystems \(mounts.count), with a volume UUID \(mounts.filter { $0.uuid != nil }.count)")
+        print("sandbox: stored grants \(app.access.storedGrants.map(\.path)), covers startup disk \(app.access.coversStartupDisk), last bookmark error \(app.access.lastBookmarkError ?? "-")")
+        print("sandbox: Full Disk Access \(app.fullDiskAccess)")
+        let home = AppSandbox.realHomeDirectory
+        for (label, path) in [
+            ("/", "/"), ("/usr", "/usr"), ("/Applications", "/Applications"), ("/Library", "/Library"), ("/Users", "/Users"),
+            ("~", home), ("~/Library", home + "/Library"), ("/private/var", "/private/var"), ("/private/tmp", "/private/tmp"),
+            ("/Volumes", "/Volumes"),
+        ] {
+            var info = stat()
+            let status = code(lstat(path, &info) == 0)
+            let handle = opendir(path)
+            let listing = code(handle != nil)
+            if let handle { closedir(handle) }
+            let resolved = realpath(path, nil)
+            let real = code(resolved != nil)
+            free(resolved)
+            print("reach: \(label): lstat \(status), opendir \(listing), realpath \(real), coverage \(app.access.coverage(for: URL(fileURLWithPath: path)))")
+        }
+        print("volumes: \(app.volumes.count) listed; startup disk “\(app.startupDiskName)”, capacity known \(app.volumes.first(where: \.isRoot).map { $0.totalCapacity > 0 } ?? false)")
+        print("locations: \(app.quickLocations.map(\.name).joined(separator: ", ")); home is the real one: \(app.quickLocations.first?.url.path == home)")
+    }
+
     func windowAppeared(_ model: WindowModel) {
         guard options.isHarness, !started else { return }
         started = true
@@ -49,6 +134,11 @@ final class SnapshotHarness {
         if let show = options.showOutline { preferences.showsOutline = show }
         if options.inspector == "off" { preferences.showsInspector = false }
 
+        if options.forgetGrants {
+            model.app.access.forgetAll()
+            print("grants: forgotten")
+        }
+        if options.sandboxReport { sandboxReport(model) }
         if options.selfTest {
             exit(await SelfTest(model: model).run())
         }
@@ -68,6 +158,13 @@ final class SnapshotHarness {
         }
         if let summary = model.summary, let tree = model.tree {
             print("scan: \(Format.count(summary.files)) files, \(Format.bytes(summary.size)), \(Format.duration(summary.duration)), nodes \(tree.count), issues \(summary.totalIssueCount)")
+            if AppSandbox.isSandboxed, let root = model.scanRoot {
+                print("access: \(root.path) via \(model.access.map { "\($0.kind) lease on \($0.rootPath)" } ?? "no lease"); Full Disk Access \(model.app.fullDiskAccess); unreadable for lack of permission: \(summary.permissionDeniedCount)")
+            }
+        } else if model.phase == .start, let alert = model.alert {
+            print("scan: failed — \(alert.title): \(alert.message.replacingOccurrences(of: "\n", with: " "))")
+            // Sandboxed, "no permission" for the scan root is the same dead end as no grant.
+            if let url = alert.accessURL { needsAccess(to: url, refused: true) }
         }
 
         switch options.colorMode {
@@ -141,7 +238,11 @@ final class SnapshotHarness {
             print("after load: \(stalls.report())")
             await exerciseForStalls(model)
         }
-        if let path = options.snapshotPath {
+        if let requested = options.snapshotPath {
+            let path = Self.outputPath(for: requested, sandboxed: AppSandbox.isSandboxed, temporaryDirectory: FileManager.default.temporaryDirectory)
+            if path != requested {
+                print("snapshot: the sandbox confines output to the container; \(requested) is written to the path below")
+            }
             if let window = target, let data = capture(window) {
                 do {
                     try data.write(to: URL(fileURLWithPath: path))
