@@ -14,8 +14,11 @@ DS="${DISKSURVEY:-$here/dist/Disk Survey.app/Contents/Helpers/disksurvey}"
 [[ -x "$DS" ]] || { echo "not found: $DS" >&2; exit 1; }
 
 names=(disksurvey diskus dua dust gdu ncdu du)
-cmds=("'$DS' '$P' -d 0" "diskus '$P'" "dua aggregate '$P'" "dust -P -d 0 '$P'" "gdu -npc '$P'"
-      "ncdu -0 -o /dev/null '$P'" "du -sk '$P'")
+# Each tool in its fastest sensible mode: one thread per core where that is not the default
+# (ncdu is single-threaded without -t; diskus defaults to three threads per core, which is slower).
+n="$(sysctl -n hw.ncpu)"
+cmds=("'$DS' '$P' -d 0" "diskus -j $n '$P'" "dua aggregate '$P'" "dust -P -d 0 '$P'" "gdu -npcs '$P'"
+      "ncdu -0 -t $n -o /dev/null '$P'" "du -sk '$P'")
 
 # -i: unreadable folders make several of the tools exit non-zero. One warm-up run fills the cache.
 args=()

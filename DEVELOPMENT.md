@@ -148,31 +148,51 @@ warm-up run, then the timed runs), and then records each tool's peak resident me
 nix-shell -p hyperfine ncdu gdu dust dua diskus --run 'Scripts/benchmark.sh home ~ 5'
 ```
 
-Results of 10 November 2026, mean of the timed runs (fastest–slowest) and peak resident memory:
+Each tool runs in its fastest sensible mode, with one thread per core where it supports that
+(`ncdu -t`, `diskus -j`; `du` is single-threaded). Results of 10 November 2026 with a warm
+file-system cache, mean of the timed runs (fastest–slowest) and peak resident memory:
 
-| Tool            | `/Applications`, 511,000 files, 7 runs | Home folder, 1.7 M files, 5 runs | Peak memory, home folder |
-|-----------------|-----------------------|-------------------------|--------|
-| disksurvey 1.0.0 | 0.76 s (0.71–0.87)   | 6.5 s (6.1–6.9)         | 217 MB |
-| gdu 5.38        | 1.99 s (1.91–2.07)    | 14.2 s (10.8–20.0)      | 81 MB  |
-| dua 2.46        | 1.24 s (1.02–1.79)    | 14.4 s (13.3–15.8)      | 42 MB  |
-| diskus 0.9      | 1.59 s (1.54–1.65)    | 15.2 s (14.6–16.0)      | 69 MB  |
-| dust 1.2.7      | 2.37 s (1.93–2.81)    | 17.5 s (16.6–19.1)      | 934 MB |
-| ncdu 2.12       | 7.99 s (7.51–8.69)    | 47.1 s (45.3–48.0)      | 3 MB   |
-| du (macOS)      | 8.91 s (8.28–9.96)    | 49.7 s (45.1–56.2)      | 28 MB  |
+| Tool             | `/Applications`, 511,000 files, 10 runs | Home folder, 1.7 M files, 5 runs | Peak memory, home folder |
+|------------------|----------------------|-------------------------|--------|
+| disksurvey 1.0.0 | 0.67 s (0.64–0.74)   | 5.4 s (5.1–5.8)         | 218 MB |
+| dua 2.46         | 0.80 s (0.79–0.82)   | 13.1 s (12.1–15.2)      | 41 MB  |
+| ncdu 2.12        | 1.56 s (1.51–1.59)   | 10.2 s (9.2–13.3)       | 131 MB |
+| dust 1.2.7       | 1.61 s (1.58–1.64)   | 13.4 s (13.3–13.6)      | 935 MB |
+| diskus 0.9       | 1.63 s (1.49–1.98)   | 14.1 s (13.3–15.1)      | 55 MB  |
+| gdu 5.38         | 1.81 s (1.78–1.85)   | 12.8 s (11.1–16.1)      | 80 MB  |
+| du (macOS)       | 4.06 s (3.79–4.90)   | 41.8 s (41.0–42.8)      | 28 MB  |
+
+With nothing cached the picture is different. A generated tree of 500,000 files in 50,000
+folders on a disk image, unmounted and mounted again before every scan (which made each scan
+read the same 176 MB from disk), five rounds with the tool order changed each time:
+
+| Tool        | First scan, median (fastest–slowest) | Same tree, cached |
+|-------------|--------------------|--------|
+| diskus      | 3.8 s (3.8–6.1)    | 1.12 s |
+| disksurvey  | 4.1 s (3.7–5.6)    | 0.73 s |
+| dust        | 4.1 s (3.9–6.0)    | 1.44 s |
+| dua         | 4.3 s (3.7–9.4)    | 0.73 s |
+| gdu         | 4.4 s (4.1–6.4)    | 1.52 s |
+| du          | 7.2 s (6.8–11.4)   | 3.59 s |
+| ncdu        | 7.4 s (6.9–10.2)   | 3.68 s |
+
+(In this second table ncdu ran single-threaded and diskus with its default thread count.)
 
 What the comparison does and does not show:
 
-- Every tool ran from the same terminal with the same permissions, each asked for its
-  cheapest output: a total, or for ncdu an export to `/dev/null`.
-- The tools do different amounts of work. `disksurvey` keeps every item's name, sizes and
-  date in memory, because a treemap needs them; `diskus`, `dua` and `du` only add sizes up, and
-  ncdu's export writes entries out as it goes. That is why Disk Survey uses more memory than
-  all of them except dust.
-- Scan times vary with what else the machine is doing. Three further `disksurvey` runs on
-  the home folder right after the benchmark took 9–10 s, not 6.5 s.
+- Disk Survey has no cache of its own; every run walks the folder again. Its entry counts
+  match `find` and its sizes match `du -sk` on the folders checked, so it does the same work.
+- Cached, it was the fastest tool on both real folders: about 1.2× ahead of dua on
+  `/Applications`, about 1.9× ahead of ncdu on the home folder, 6–8× ahead of `du`. On the
+  generated tree it tied with dua.
+- On a first scan the disk sets the pace. Disk Survey is level with the other parallel tools
+  there and about 1.8× faster than `du`.
+- It uses more memory than every tool but dust, because it keeps every item's name, sizes
+  and date for the map, while most of the others only add sizes up.
+- Scan times vary with what else the machine is doing; an earlier run of the same benchmark
+  on a busier machine gave 6.5 s for the home folder and 8.9 s for `du` on `/Applications`.
 - Only command-line tools are in it. Graphical apps such as Disk Inventory X, GrandPerspective
   or DaisyDisk cannot be timed without someone operating them, and were not measured.
-- The file-system cache was warm. A first scan after a restart is slower for every tool.
 
 The chart in the README is drawn from these numbers.
 
