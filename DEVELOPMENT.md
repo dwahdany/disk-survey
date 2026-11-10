@@ -440,11 +440,10 @@ Everything that needs a click in an open panel or a switch in System Settings:
 - Drag and drop onto a window or the Dock icon, the Dock's recent items, Open, Open in
   Terminal, Share and the link into System Settings in a sandboxed build. Quick Look: the panel
   opens and is driven by the window; what it shows was not looked at.
-- `--mas` beyond the dry run: the certificates do not exist yet. Unknown until
-  `altool --validate-app` runs: whether App Store Connect accepts a hand-assembled bundle (no
-  Xcode `DT*` keys in Info.plist, a plain `.icns`), and whether App Review accepts the hidden
-  harness arguments (including a run-time lookup of `CGWindowListCreateImage`) and the pointer
-  to Full Disk Access.
+- App Review: whether it accepts the hidden harness arguments (including a run-time lookup of
+  `CGWindowListCreateImage`) and the pointer to Full Disk Access. `--mas` itself has been run:
+  build 1 of 1.0.0 passed `altool --validate-app` and was uploaded, so App Store Connect takes
+  the hand-assembled bundle (no Xcode `DT*` keys in Info.plist, a plain `.icns`).
 - macOS 26 and Intel.
 
 ### Submitting to the Mac App Store
