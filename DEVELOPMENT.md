@@ -1,0 +1,283 @@
+# Developing Disk Survey
+
+How to build, test, measure and release Disk Survey. For what the app does and how to use it,
+see the [README](README.md).
+
+- [Requirements](#requirements)
+- [Build and run](#build-and-run)
+- [Tests](#tests)
+- [Checking the app without a person at the screen](#checking-the-app-without-a-person-at-the-screen)
+- [Screenshots](#screenshots)
+- [Performance measurements](#performance-measurements)
+- [Signing and notarization](#signing-and-notarization)
+- [Releasing on GitHub](#releasing-on-github)
+- [Architecture](#architecture)
+
+## Requirements
+
+- The Command Line Tools (`xcode-select --install`) with Swift 6.2 or later. Xcode is not
+  required, except for notarization. If `xcode-select` points at an Xcode whose license has not
+  been accepted, the scripts fall back to the Command Line Tools by themselves; for bare `swift`
+  commands set `DEVELOPER_DIR=/Library/Developer/CommandLineTools`.
+- No third-party packages. Because the Command Line Tools lack SwiftUI's macro plugin, the app
+  uses no `@State` or `#Preview` (it is built on `@Observable` models), and the tests use Swift
+  Testing rather than XCTest.
+
+## Build and run
+
+```sh
+Scripts/build-app.sh --native --run     # quick build for this Mac, then launch
+Scripts/build-app.sh                    # universal build → dist/Disk Survey.app
+Scripts/build-app.sh --install          # … and copy to /Applications (or ~/Applications)
+Scripts/build-app.sh --dmg --zip        # … and package dist/DiskSurvey-<version>.dmg / .zip
+```
+
+| Option      | Effect                                                                 |
+|-------------|------------------------------------------------------------------------|
+| `--native`  | Build only this Mac's architecture. Faster; not for distribution.     |
+| `--debug`   | Debug configuration, symbols kept.                                     |
+| `--dmg`     | Compressed disk image with an `/Applications` shortcut.                |
+| `--zip`     | Zip archive made with `ditto` (keeps the signature intact).            |
+| `--install` | Copy the app to `/Applications`, or `~/Applications` if not writable.  |
+| `--run`     | Open the app when the build finishes.                                  |
+
+Every run starts by removing `dist/Disk Survey.app` and any `dist/DiskSurvey-*.dmg` / `.zip`,
+and the new bundle and packages only appear under those names once they are complete, signed
+and verified. So whatever is in `dist/` belongs to the last successful run: a failed build leaves
+nothing behind, and a run without `--dmg`/`--zip` leaves no package from an earlier build.
+
+The script builds each architecture into its own SwiftPM scratch directory
+(`.build-pkg-arm64`, `.build-pkg-x86_64`), joins them with `lipo`, assembles the bundle, strips
+symbols, signs it and verifies the result. The version comes from the `VERSION` file.
+
+During development you can also run the targets straight from SwiftPM
+(`swift run DiskSurveyApp`, `swift run disksurvey-cli`).
+
+## Tests
+
+```sh
+Scripts/test.sh                                   # everything: 284 tests in five targets
+Scripts/test.sh --filter TrashServiceTests        # one suite
+DISKSURVEY_TEST_REAL_TRASH=1 Scripts/test.sh --filter TrashServiceTests
+```
+
+`Scripts/test.sh` wraps `swift test` so that Swift Testing works with only the Command Line
+Tools. The scanner tests read real system folders (`/System/Library`, `/usr`) and assume an
+APFS startup volume. The Move to Trash tests use a stand-in Trash in a temporary folder; only
+with `DISKSURVEY_TEST_REAL_TRASH=1` does one test move a temporary fixture into the real Trash,
+check that it arrived, and delete it from there again. The app itself has no test target;
+its checks run inside the app with `DiskSurvey --self-test` (see
+[the next section](#checking-the-app-without-a-person-at-the-screen)).
+
+## Checking the app without a person at the screen
+
+The app has a few hidden launch arguments that drive it into a state, write a PNG of its
+window and exit. They work on the bare executable (`swift run DiskSurveyApp …`) and on the
+bundle's; `DiskSurvey` below stands for `"dist/Disk Survey.app/Contents/MacOS/DiskSurvey"`
+(quoted, because the bundle name contains a space):
+
+```sh
+DiskSurvey --scan ~/Library --snapshot out.png --window-size 1440x900 --appearance dark
+DiskSurvey --snapshot start.png                         # the start screen
+DiskSurvey --scan /usr --inspector largest --search lib --snapshot search.png
+DiskSurvey --scan / --during-scan 2.5 --snapshot scanning.png
+DiskSurvey --scan / --measure-stalls                    # worst main-thread stall per operation
+DiskSurvey --synthetic 5000000 --measure-stalls         # a generated five-million-node tree
+DiskSurvey --self-test                                  # in-app checks; prints PASS/FAIL, exit status 1 on failure
+```
+
+Other switches: `--select <path>`, `--zoom <path>`, `--color kind|age`,
+`--style adaptive|framed|grouped|cushion`, `--depth 1…4|all`, `--hover <path>` (hover outline and
+tooltip for that item), `--settings general|scanning|appearance`, `--trash-sheet`,
+`--cancel-after <seconds>`, `--dump-menu`, and `--exercise-actions` (trash, undo and rescan
+against a throwaway folder that must be named `disksurvey-action-test`). The picture comes from
+the window server when it is available, which shows glass and vibrancy as on screen; while the
+screen is locked it falls back to AppKit's display cache, which shows the layout but not the
+materials (and, in the dark appearance, draws the inspector's text too dark; a window-server
+capture of the same view taken earlier is correct, so this is believed to be an artifact of
+the fallback). Harness runs use their own settings domain and leave
+Recents alone.
+
+`--self-test` scans a small fixture it creates in the temporary folder and a generated tree, and
+checks things that need a running app: command enabling, the outline's row reuse, stale result
+rows, icon caching, which views are re-evaluated by which change, the split view's limits, the
+map's depth setting, and that a drag onto the Trash acts on the dragged items rather than the selection. The scan
+window's minimum width is 842 pt while the inspector is open and 760 pt otherwise.
+
+## Screenshots
+
+The pictures in the README show a made-up home folder, not anybody's disk.
+`Scripts/make-demo-tree.py` writes it: about 19,000 files with invented names under
+`Users/alex`, each one an APFS clone of a single 8 GB base file truncated to the wanted length.
+Clones are counted at their full size (see [Accounting notes](README.md#accounting-notes)), so
+the tree reports 823 GB while occupying 8 GB. Putting it on a disk image keeps the paths clean:
+
+```sh
+hdiutil create -type SPARSE -fs APFS -size 1t -volname Demo demo.sparseimage
+hdiutil attach demo.sparseimage -nobrowse
+Scripts/make-demo-tree.py /Volumes/Demo
+
+R=/Volumes/Demo/Users/alex; S="--window-size 1440x900 --appearance light"
+DiskSurvey --scan $R $S --snapshot docs/images/overview-light.png
+DiskSurvey --scan $R --window-size 1440x900 --appearance dark --snapshot docs/images/overview-dark.png
+DiskSurvey --scan $R $S --depth 2 --snapshot docs/images/depth-2.png
+DiskSurvey --scan $R $S --color age --snapshot docs/images/by-age.png
+DiskSurvey --scan $R $S --zoom $R/Developer \
+    --hover $R/Developer/ledger-api/target/debug/deps/lib001.rlib --snapshot docs/images/zoom-hover.png
+
+hdiutil detach /Volumes/Demo && rm demo.sparseimage
+```
+
+The generator is seeded, so the same tree comes out every time (file ages are relative to the
+day it runs). Take the pictures with the screen unlocked, so that they come from the window
+server.
+
+## Performance measurements
+
+All figures are from the machine this was developed on (Apple M6, 12 cores, macOS 27.2,
+internal APFS SSD, release build, warm file-system cache). Your numbers will differ.
+
+### Compared with other tools
+
+`Scripts/benchmark.sh <label> <path> [runs]` times a scan of one folder with `disksurvey` and
+with six other disk-usage tools using [hyperfine](https://github.com/sharkdp/hyperfine) (one
+warm-up run, then the timed runs), and then records each tool's peak resident memory with
+`/usr/bin/time -l`:
+
+```sh
+nix-shell -p hyperfine ncdu gdu dust dua diskus --run 'Scripts/benchmark.sh home ~ 5'
+```
+
+Results of 10 November 2026, mean of the timed runs (fastest–slowest) and peak resident memory:
+
+| Tool            | `/Applications`, 511,000 files, 7 runs | Home folder, 1.7 M files, 5 runs | Peak memory, home folder |
+|-----------------|-----------------------|-------------------------|--------|
+| disksurvey 1.0.0 | 0.76 s (0.71–0.87)   | 6.5 s (6.1–6.9)         | 217 MB |
+| gdu 5.38        | 1.99 s (1.91–2.07)    | 14.2 s (10.8–20.0)      | 81 MB  |
+| dua 2.46        | 1.24 s (1.02–1.79)    | 14.4 s (13.3–15.8)      | 42 MB  |
+| diskus 0.9      | 1.59 s (1.54–1.65)    | 15.2 s (14.6–16.0)      | 69 MB  |
+| dust 1.2.7      | 2.37 s (1.93–2.81)    | 17.5 s (16.6–19.1)      | 934 MB |
+| ncdu 2.12       | 7.99 s (7.51–8.69)    | 47.1 s (45.3–48.0)      | 3 MB   |
+| du (macOS)      | 8.91 s (8.28–9.96)    | 49.7 s (45.1–56.2)      | 28 MB  |
+
+What the comparison does and does not show:
+
+- Every tool ran from the same terminal with the same permissions, each asked for its
+  cheapest output: a total, or for ncdu an export to `/dev/null`.
+- The tools do different amounts of work. `disksurvey` keeps every item's name, sizes and
+  date in memory, because a treemap needs them; `diskus`, `dua` and `du` only add sizes up, and
+  ncdu's export writes entries out as it goes. That is why Disk Survey uses more memory than
+  all of them except dust.
+- Scan times vary with what else the machine is doing. Three further `disksurvey` runs on
+  the home folder right after the benchmark took 9–10 s, not 6.5 s.
+- Only command-line tools are in it. Graphical apps such as Disk Inventory X, GrandPerspective
+  or DaisyDisk cannot be timed without someone operating them, and were not measured.
+- The file-system cache was warm. A first scan after a restart is slower for every tool.
+
+The chart in the README is drawn from these numbers.
+
+### Disk Survey by itself
+
+| What                                                        | Result                                   |
+|-------------------------------------------------------------|------------------------------------------|
+| Whole startup disk, `disksurvey /` (4.29 M files, 1.11 M folders, 613 GB) | 12.5 s, 433,000 entries/s, 473 MB peak memory |
+| Home folder (1.89 M files, 0.30 M folders, 400 GB)          | 5.3–5.9 s, 370,000–414,000 entries/s, 229 MB peak memory |
+| `~/Library` (793,000 files, 134 GB), command line           | 2.0–2.7 s, 350,000–466,000 entries/s, 101 MB peak memory |
+| `/Applications` (511,000 files, 40 GB)                      | 0.65 s, 900,000 entries/s, 60 MB peak memory |
+| Command Line Tools folder (86,000 files, 1.42 GB)           | 0.16–0.29 s                              |
+| Whole startup disk in the app, to the finished map          | 13–14 s, 0.86–0.89 GB peak memory        |
+| Treemap layout, 2,000,000 nodes at 3000×2000 px (adaptive frames) | 5.6–6.0 ms                         |
+| Cushion rendering of that map, all cores / one thread       | 4.1–4.4 ms / 25–30 ms                    |
+| The same map limited to 1–3 folder levels, layout + rendering | 14–15 ms + 2.5–2.9 ms the first time, also when one folder holds nearly everything (the layout walks the collapsed folders once, on all cores, for their dominant colour); under 0.1 ms + 2.5–2.9 ms for every further frame of the same tree (resize, zoom back), which reuses the answer |
+| Hit test                                                    | under 100 ns                             |
+
+The scan cost is almost entirely kernel time (`open` and `getattrlistbulk` per folder), so
+small, cached trees reach higher rates than a whole disk. The figures above come only from runs
+in which no folder took long to open. That qualification matters on this machine (macOS 27.2):
+opening a folder inside another app's container (`~/Library/Containers`, `Group Containers`)
+makes the kernel sandbox ask `sandboxd` for approval, and now and then the waiting thread is not
+woken: the `open` sits for almost exactly 5 seconds, fails with `EINTR`, and succeeds at once
+when retried. That is a defect in the system (a plain C directory walker reproduces it), and it
+used to turn a 5.3 s scan of the home folder into 6–12 s in about half the runs. The scanner
+now has a watchdog that interrupts a folder `open` stuck for more than 250 ms (doubling the
+allowance each time it has to interrupt the same folder, and leaving it alone past 4 s), so
+the same folder is opened by the same code, only sooner; nothing is skipped. Each occurrence
+now costs about 0.25–0.3 s on one thread: in six consecutive scans of `~/Library` (814,000
+files, 138 GB) the times were 2.0–2.3 s, with one interrupted open among them. Disk Survey still
+reports it (`held up 0,25 s opening …` on the command line), and
+`ScanOptions.interruptStalledOpens` turns the watchdog off for diagnosis.
+
+Memory is about 88 bytes per scanned item at the peak of a command-line scan (105 for the home
+folder). The app needs more while it scans, because the map and outline show partial trees:
+each one is a second copy of what has been read so far. Up to a million items the picture
+refreshes every 0.6 s or so, then less and less often, and beyond two million items it stops
+refreshing until the scan is done (the counters keep running). With that the whole-disk scan
+above peaks at 0.86–0.89 GB in the app; without any live picture it would be 0.68 GB.
+
+In the app, the worst main-thread stall per operation, measured with `--measure-stalls` on the
+home folder (2.19 M items) and the startup disk (5.43 M items): selecting 4–37 ms, zooming
+1–5 ms, a search 18–42 ms, switching between on-disk and logical sizes 19–40 ms, opening the
+Largest or Info tab 11–22 ms, and 71–81 ms once while the finished scan is taken over. Nothing
+exceeded 100 ms. (Measured with the screen locked, so the window was not being composited;
+scanning, layout, rendering, search and tree updates all run off the main thread.)
+
+Totals were compared with `du -sk` on four folders (`/Library/Developer/CommandLineTools`,
+`/usr/share`, `/System/Library/Frameworks` and a source tree of 7.2 GB): identical to the byte
+in each case.
+
+## Signing and notarization
+
+By default the app is signed ad hoc with the hardened runtime enabled. That is all you need on
+the Mac that built it. An ad-hoc build copied to another Mac is quarantined by Gatekeeper; the
+recipient has to allow it under System Settings → Privacy & Security → "Open Anyway".
+
+For a build that opens cleanly elsewhere you need an Apple Developer ID:
+
+```sh
+# once: store credentials for notarytool in the keychain
+xcrun notarytool store-credentials disksurvey-notary --apple-id you@example.com --team-id TEAMID
+
+export CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+Scripts/build-app.sh --notarize --dmg --zip
+```
+
+`--notarize` submits the app to Apple, staples the ticket to the bundle, then packages it, and
+notarizes and staples the dmg as well.
+
+## Releasing on GitHub
+
+```sh
+Scripts/release.sh            # notarized build, tag v<VERSION>, DRAFT release with dmg, zip, checksums
+Scripts/release.sh --publish  # the same, published immediately
+```
+
+The script refuses to run with uncommitted changes, an unpushed HEAD or an existing tag; bump
+`VERSION` (and `DiskSurveyVersion.string`) for each release.
+
+`notarytool` and `stapler` ship with Xcode, not with the Command Line Tools, so this one step
+needs a machine with Xcode installed. Note that every ad-hoc rebuild has a new code identity, so
+macOS treats it as a different app for privacy permissions (see [Full Disk Access](README.md#full-disk-access)); a stable
+signing identity avoids having to re-grant them.
+
+## Architecture
+
+A single Swift package (`Package.swift`, Swift 6 language mode with strict concurrency):
+
+| Target              | Role                                                                                  |
+|---------------------|---------------------------------------------------------------------------------------|
+| `DiskSurveyCore`    | Foundation-only model: the struct-of-arrays `FileTree`, file-kind classification, formatting. |
+| `DiskSurveyScan`    | Parallel filesystem scanner producing a `FileTree`; mount table, volume info, disk-access checks. |
+| `DiskSurveyTreemap` | Squarified layout, hit-testing and the cushion rasteriser, drawing into plain pixel buffers. No AppKit. |
+| `DiskSurveyMapView` | The AppKit treemap view: rendering, hover, selection, zoom.                           |
+| `disksurvey-cli`    | The command line tool (installed as `disksurvey`). Uses Core and Scan only.           |
+| `DiskSurveyApp`     | The SwiftUI/AppKit application.                                                       |
+
+Tests use Swift Testing and live in `Tests/` (Core, Scan including the Move to Trash service,
+Treemap, MapView offscreen rendering, and the CLI's parser and text helpers). Packaging lives in `Scripts/` and `Resources/`:
+
+- `Scripts/build-app.sh` — builds, bundles, signs and packages the app.
+- `Scripts/install-cli.sh` — links the command line tool onto your `PATH`.
+- `Scripts/make-icon.swift` — draws the app icon with CoreGraphics and writes
+  `Resources/AppIcon.icns` (run `swift Scripts/make-icon.swift` after changing it).
+- `Scripts/test.sh` — runs the test suite with a Command-Line-Tools-only toolchain.
+- `Resources/Info.plist` — bundle metadata template; the version is stamped in at build time.
