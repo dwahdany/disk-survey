@@ -168,15 +168,13 @@ read the same 176 MB from disk), five rounds with the tool order changed each ti
 
 | Tool        | First scan, median (fastest–slowest) | Same tree, cached |
 |-------------|--------------------|--------|
-| diskus      | 3.8 s (3.8–6.1)    | 1.12 s |
-| disksurvey  | 4.1 s (3.7–5.6)    | 0.73 s |
-| dust        | 4.1 s (3.9–6.0)    | 1.44 s |
-| dua         | 4.3 s (3.7–9.4)    | 0.73 s |
-| gdu         | 4.4 s (4.1–6.4)    | 1.52 s |
-| du          | 7.2 s (6.8–11.4)   | 3.59 s |
-| ncdu        | 7.4 s (6.9–10.2)   | 3.68 s |
-
-(In this second table ncdu ran single-threaded and diskus with its default thread count.)
+| dua         | 4.9 s (4.2–5.6)    | 0.75 s |
+| disksurvey  | 4.9 s (4.0–4.9)    | 0.75 s |
+| gdu         | 5.0 s (4.8–5.4)    | 1.51 s |
+| diskus      | 5.1 s (4.7–5.8)    | 1.22 s |
+| ncdu        | 5.2 s (5.1–5.5)    | 1.40 s |
+| dust        | 5.5 s (5.3–5.7)    | 1.39 s |
+| du          | 8.8 s (8.4–12.1)   | 3.88 s |
 
 What the comparison does and does not show:
 
