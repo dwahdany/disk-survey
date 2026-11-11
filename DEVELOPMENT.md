@@ -282,7 +282,9 @@ from `APP_SANDBOX_CONTAINER_ID`: a normal build started from an environment that
 variable is not confined and must not behave as if it were. The variable is consulted only if
 the signature cannot be read.
 Nothing is compiled differently, so the tests and the harness exercise the code that ships.
-**No sandboxed build has been released or submitted; see [Not tested](#not-tested).**
+**The sandboxed build is out as a public TestFlight beta
+(<https://testflight.apple.com/join/ku8sJmCv>); it has not been released on the Mac App Store.
+See [Not tested](#not-tested).**
 
 ```sh
 Scripts/build-app.sh --native --sandbox          # dist/Disk Survey (Sandbox).app, ad hoc

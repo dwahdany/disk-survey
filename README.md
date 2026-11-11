@@ -17,12 +17,49 @@ command line tool using the same engine.
 
 ## Install
 
-Download `DiskSurvey-<version>.dmg` from the
-[Releases page](https://github.com/dwahdany/disk-survey/releases), open it and drag Disk Survey
-to Applications. The app is signed with a Developer ID and notarized by Apple, so it opens
-without a Gatekeeper warning. It needs macOS 26 or later, on Apple silicon or Intel.
+<p>
+  <a href="https://github.com/dwahdany/disk-survey/releases/latest"><img src="docs/images/badge-download.svg" height="56" alt="Download Disk Survey for macOS"></a>
+  &nbsp;
+  <a href="https://testflight.apple.com/join/ku8sJmCv"><img src="docs/images/badge-testflight.svg" height="56" alt="Join the Disk Survey beta on TestFlight"></a>
+</p>
 
-To build it yourself you need only the Command Line Tools:
+Disk Survey needs macOS 26 or later, on Apple silicon or Intel. There are three ways to get it:
+
+| | Direct download | TestFlight beta | Build from source |
+|---|---|---|---|
+| **Edition** | Full | [Sandboxed](#sandboxed-edition) | Full |
+| **Command line tool** | Included | Not included | Included |
+| **Updates** | Download the new release | Automatic, through TestFlight | `git pull` and rebuild |
+| **Signature** | Developer ID, notarized | Apple-distributed | Ad hoc |
+
+### Direct download
+
+1. Download `DiskSurvey-<version>.dmg` from the
+   [Releases page](https://github.com/dwahdany/disk-survey/releases).
+2. Open it and drag Disk Survey to Applications.
+3. Optionally grant [Full Disk Access](#full-disk-access) so that a whole-disk scan sees
+   everything.
+
+The app is signed with a Developer ID and notarized by Apple, so it opens without a Gatekeeper
+warning.
+
+### TestFlight beta
+
+1. Install [TestFlight](https://apps.apple.com/app/testflight/id899247664) from the Mac App
+   Store.
+2. Open **<https://testflight.apple.com/join/ku8sJmCv>** on your Mac, choose *Accept*, then
+   *Install*.
+3. On the start screen, allow access to your startup disk (or choose a folder) and scan.
+
+This is the [sandboxed edition](#sandboxed-edition), the one built for the Mac App Store: it
+reads only the disks and folders you choose and comes without the command line tool. TestFlight
+keeps it up to date; a beta build stops opening 90 days after it was uploaded, and the place
+for feedback is TestFlight's *Send Beta Feedback* or the
+[issue tracker](https://github.com/dwahdany/disk-survey/issues).
+
+### Build from source
+
+You need only the Command Line Tools:
 
 ```sh
 git clone https://github.com/dwahdany/disk-survey && cd disk-survey
@@ -32,9 +69,8 @@ Scripts/build-app.sh --install          # universal build, copied to /Applicatio
 [DEVELOPMENT.md](DEVELOPMENT.md) covers the build options, tests, the screenshot harness,
 benchmarks, signing and releasing, and the architecture.
 
-There is no Mac App Store release. The code can be built as a sandboxed variant
-(`Scripts/build-app.sh --sandbox`), which is what a store release would be; it has only been
-checked by automated runs, see [Sandboxed edition](#sandboxed-edition).
+There is no Mac App Store release yet; the TestFlight beta is the same sandboxed build that a
+store release would be (`Scripts/build-app.sh --sandbox` builds it locally).
 
 ## Features
 
@@ -99,8 +135,8 @@ Full Disk Access to your terminal if you want complete results there.
 
 ### Sandboxed edition
 
-Built with `--sandbox`, Disk Survey runs in the macOS App Sandbox and behaves differently in
-these ways:
+Installed from TestFlight or built with `--sandbox`, Disk Survey runs in the macOS App Sandbox
+and behaves differently in these ways:
 
 - It can read only the disks and folders you choose. The start screen offers to allow the whole
   startup disk once; otherwise an open panel asks ("Grant Access") for each new location. The
@@ -111,8 +147,8 @@ these ways:
 - The command line tool is not included.
 - Settings and recent scans are kept apart from the normal build's.
 
-No sandboxed build has been released or submitted to the App Store. What was tried and what
-is still untested is listed in
+The sandboxed edition is available as a [TestFlight beta](#testflight-beta); it has not been
+released on the Mac App Store. What was tried and what is still untested is listed in
 [DEVELOPMENT.md](DEVELOPMENT.md#sandboxed-and-app-store-builds).
 
 ## Command line

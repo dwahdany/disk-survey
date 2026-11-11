@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="212" height="56" viewBox="0 0 212 56" role="img" aria-label="Download Disk Survey for macOS">
+  <title>Download Disk Survey for macOS</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a3d46"/>
+      <stop offset="1" stop-color="#15161a"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="212" height="56" rx="14" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="211" height="55" rx="13.5" fill="url(#shine)" stroke="#ffffff" stroke-opacity="0.22"/>
+  <!-- arrow into a tray -->
+  <g transform="translate(34 28)" fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <circle r="21" fill="#ffffff" fill-opacity="0.10" stroke="none"/>
+    <path d="M0 -11 V 4 M -6.5 -2 L 0 4.5 L 6.5 -2" stroke-width="2.6"/>
+    <path d="M-10 6 V 9.5 Q -10 11.5 -8 11.5 H 8 Q 10 11.5 10 9.5 V 6" stroke-width="2.2"/>
+  </g>
+  <g fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', 'Segoe UI', Arial, sans-serif">
+    <text x="66" y="23" font-size="11.5" font-weight="500" fill-opacity="0.85">Download for</text>
+    <text x="65" y="43.5" font-size="21" font-weight="700" letter-spacing="-0.2">macOS</text>
+  </g>
+</svg>
